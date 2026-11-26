@@ -167,6 +167,69 @@ test('case and deletion summaries keep unavailable ordinary counts distinct from
   assert.match(h.element('#caseCounts').textContent, /流水 0 笔/);
 });
 
+test('pair review displays only available recall counts and retains the original candidates', async () => {
+  const h = harness('app.js', undefined, undefined, { AbortController });
+  let reply;
+  h.network(async (path, options) => {
+    if (path === '/api/v1/model-trial/status') return response({ enabled: true });
+    assert.equal(path, '/api/v1/cases/1/review-model-trial');
+    assert.deepEqual(JSON.parse(options.body), {
+      kind: 'pair', anchor_id: '8', canvas_id: '0', review_token: 'synthetic-token'
+    });
+    return response(reply);
+  });
+  h.run(`
+    window.FundsDesktopPreferences = {};
+    const create = document.createElement;
+    document.createElement = tag => {
+      const node = create(tag);
+      node.tagName = tag;
+      node.children = [];
+      node.isConnected = true;
+      node.append = (...items) => node.children.push(...items);
+      node.replaceChildren = (...items) => { node.children = items; };
+      if (tag === 'select') node.value = '0';
+      return node;
+    };
+    state.caseId = 1;
+    state.canvasId = 0;
+    state.ctx = {
+      context: caseContext(), load: {}, phase: 'ready', flowId: '8', detail: { id: '8' },
+      data: {
+        analysis_revision: 'synthetic-revision',
+        review: { token: 'synthetic-token', pair: { status: 'unknown', candidate_ids: ['9'] } },
+        rows: [{ id: '8' }, { id: '9' }]
+      }
+    };
+    globalThis.pairTestCard = document.createElement('article');
+    renderContextModelTrial(pairTestCard, state.ctx, state.ctx.detail);
+  `);
+  await flush();
+  const [section] = h.run('pairTestCard.children');
+  assert.equal(section.hidden, false);
+  const button = section.children.find(node => node.tagName === 'button');
+  const status = section.children.find(node => node.tagName === 'p');
+  const result = section.children.at(-1);
+  const cases = [
+    [{ local_pair_read_only: true }, [], []],
+    [{}, [], ['系统在当前范围召回 0 个候选。指定两条原行的比较可在来源记录中查看。']],
+    [{ candidate_total: 2, candidate_total_exact: true }, ['F9', 'F10'], ['已列 2 个候选，共 2 个。可在来源记录按原行查看。']],
+    [{ candidate_total: 3, candidate_total_exact: false }, ['F9'], ['已列 1 个候选，共至少 3 个。可在来源记录按原行查看。']],
+    [{ more_candidates: true }, ['F9'], ['系统在当前范围召回 1 个候选（还有原行未列出）。指定两条原行的比较可在来源记录中查看。']]
+  ];
+  for (const [facts, candidates, notes] of cases) {
+    reply = { state: 'pending', packet: {
+      facts: { case_id: '1', kind: 'pair', anchor_id: '8', canvas_id: '0', revision: 'synthetic-revision', ...facts },
+      candidates: candidates.map(id => ({ id })), records: []
+    } };
+    await button.onclick();
+    assert.equal(status.textContent, '证据不足，保留待核。');
+    assert.deepEqual(Array.from(result.children, node => node.textContent), notes);
+    assert.equal(h.run('JSON.stringify(state.ctx.data.review.pair.candidate_ids)'), '["9"]');
+    assert.equal(h.run('state.ctx.data.rows.length'), 2);
+  }
+});
+
 test('transport retries stay silent and only an uncaught current owner reports an error', async () => {
   const h = harness('app.js');
   h.run('state.caseId=1;globalThis.feedbackNotices=[];window.FundsFeedback={notify:value=>feedbackNotices.push(value)}');

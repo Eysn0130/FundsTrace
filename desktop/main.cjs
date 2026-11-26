@@ -4,6 +4,7 @@ const { app, Menu, dialog, session, screen, ipcMain, nativeTheme, shell } = requ
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs/promises');
+const { mkdtempSync, mkdirSync } = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { launchConfig, HEADER, pageAllowed, popupKind, requestAllowed, downloadAllowed, windowBounds } = require('./host-policy.cjs');
 const { startBackend } = require('./backend.cjs');
@@ -15,10 +16,20 @@ const appearance = require('./appearance.cjs');
 const sourceCopies = require('./source-copies.cjs');
 const appIcon = path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 
-app.setName('FundsTrace');
+const modelTrial = process.argv.includes('--model-trial');
+const trialRoot = modelTrial && !app.isPackaged ? mkdtempSync(path.join(os.tmpdir(), 'funds-trace-model-trial-')) : null;
+if (trialRoot) {
+  const profile = path.join(trialRoot, 'profile');
+  const storage = path.join(trialRoot, 'session');
+  mkdirSync(profile);
+  mkdirSync(storage);
+  app.setPath('userData', profile);
+  app.setPath('sessionData', storage);
+}
+app.setName(trialRoot ? 'FundsTrace 隔离试用' : 'FundsTrace');
 app.setAppUserModelId('com.eysn.fundstrace');
 const synthetic = process.argv.includes('--synthetic');
-let backend, preparation, temporaryRoot, quitting = false, shutdownComplete = false, fatalShown = false;
+let backend, preparation, temporaryRoot = trialRoot, quitting = false, shutdownComplete = false, fatalShown = false;
 let updateService, installUpdate = false, updateTimer;
 let sourceCopyService;
 const owned = new Set();
@@ -31,7 +42,8 @@ async function fail(message) {
   dialog.showErrorBox('FundsTrace', message);
   app.quit();
 }
-if (!app.requestSingleInstanceLock()) app.quit();
+if (modelTrial && app.isPackaged) app.exit(2);
+else if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => {
     const win = [...windows][0]; if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
@@ -71,7 +83,7 @@ else {
       // A single Main-owned store prevents geometry and renderer preferences
       // overwriting one another. Disposable source mode never changes user settings.
       const transientPreferences = new Map();
-      const preferences = synthetic ? {
+      const preferences = (synthetic || modelTrial) ? {
         getItem: key => transientPreferences.get(key) ?? null,
         setItem: (key, value) => { transientPreferences.set(key, value); return true; },
         removeItem: key => transientPreferences.delete(key),
@@ -164,7 +176,7 @@ else {
           : owner ? screen.getDisplayMatching(owner.getBounds()) : screen.getPrimaryDisplay();
         const initialBounds = windowBounds(display.workArea, savedBounds);
         const host = createWindowShell({
-          windowOptions: { title: '循迹 FundsTrace', backgroundColor: '#10171f', icon: appIcon, ...initialBounds, show: false },
+          windowOptions: { title: modelTrial ? '循迹 FundsTrace · 隔离试用' : '循迹 FundsTrace', backgroundColor: '#10171f', icon: appIcon, ...initialBounds, show: false },
           webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: localSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, spellcheck: false },
           onFailure: () => void fail('FundsTrace 页面进程已停止，请重新打开应用。'), appearance: resolvedAppearance(),
         });
@@ -328,12 +340,12 @@ else {
       if (savedWindow?.maximized) primary.maximize();
       primary.show();
       preparation = (async () => {
-        const dataDir = synthetic
+        const dataDir = trialRoot ? path.join(trialRoot, 'data') : synthetic
           ? path.join(temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'funds-trace-desktop-')), 'data')
           : path.join(app.getPath('userData'), 'data');
         await fs.mkdir(dataDir, { recursive: true });
         if (quitting || primary.isDestroyed()) return;
-        const config = launchConfig({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, repoRoot: path.resolve(__dirname, '..'), python: process.env.FUNDS_TRACE_PYTHON, dataDir, synthetic });
+        const config = launchConfig({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, repoRoot: path.resolve(__dirname, '..'), python: process.env.FUNDS_TRACE_PYTHON, dataDir, synthetic, modelTrial });
         backend = startBackend(config, { onExit: () => void fail('FundsTrace 数据服务已停止。请关闭后重新打开应用；未完成的任务会在下次启动时识别。') });
       })();
       await preparation;

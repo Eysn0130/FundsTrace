@@ -52,6 +52,8 @@ function harness() {
     }
     get id() { return this.attributes.get('id') || ''; }
     set id(value) { this.attributes.set('id', String(value)); }
+    get name() { return this.attributes.get('name') || ''; }
+    set name(value) { this.attributes.set('name', String(value)); }
     get className() { return this.attributes.get('class') || ''; }
     set className(value) { for (const name of this.className.split(/\s+/)) this.classList.remove(name); this.attributes.set('class', value); this.classList.add(...value.split(/\s+/).filter(Boolean)); }
     get isConnected() { return this === document?.root || !!this.parentElement?.isConnected; }
@@ -83,7 +85,14 @@ function harness() {
     getAttribute(name) { return this.attributes.get(name) ?? null; }
     removeAttribute(name) { this.attributes.delete(name); if (['hidden', 'disabled'].includes(name)) this[name] = false; }
     appendChild(child) { child.remove(); child.parentElement = this; this.children.push(child); return child; }
-    append(...children) { children.forEach(child => this.appendChild(child)); }
+    append(...children) {
+      for (const child of children) {
+        if (typeof child !== 'string') { this.appendChild(child); continue; }
+        const text = new Element('#text');
+        text.textContent = child;
+        this.appendChild(text);
+      }
+    }
     after(child) { const parent = this.parentElement; child.remove(); parent.children.splice(parent.children.indexOf(this) + 1, 0, child); child.parentElement = parent; }
     remove() {
       if (document?.activeElement && this.contains(document.activeElement)) document.activeElement = document.body;
@@ -161,7 +170,7 @@ function harness() {
     const value = options?.method === 'DELETE' ? { ok: true } : await network(path, options);
     return { ok: true, status: 200, json: async () => value, text: async () => JSON.stringify(value) };
   };
-  const context = vm.createContext({ state, document, window, exportWorkspace: null, caseWorkspace: null, URL, Set, Map, Event, fetch,
+  const context = vm.createContext({ state, document, window, exportWorkspace: null, caseWorkspace: null, URL, Set, Map, Event, AbortController, fetch,
     $: selector => document.querySelector(selector), $$: selector => document.querySelectorAll(selector),
     api: async (path, options) => (await fetch(path, options)).json(),
     jsonOpts: body => ({ headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) }),
@@ -204,18 +213,19 @@ function result(account = 'SYN-CURRENT') {
     payer_name: '合成来款方', payer_account: 'SYN-PAYER', payee_name: '合成收款方', payee_account: 'SYN-PAYEE',
     self_account: book === 'self' ? (dir === 'in' ? 'SYN-PAYEE' : 'SYN-PAYER') : (dir === 'in' ? 'SYN-PAYER' : 'SYN-PAYEE'),
     amount: '9007199254740993.07', currency: 'CNY', balance: null, summary: '合成交易摘要',
-    review_fields: { account: 'SYN-PAYEE', name: '合成收款方', direction: dir === 'in' ? '贷' : '借' },
+    review_fields: { account: 'SYN-PAYEE', name: '合成收款方', direction: dir === 'in' ? '贷' : '借',
+      book_direction: dir, book_direction_basis: 'source_marker' },
     review_roles: [], ...extra });
   const anchor = flow(12, 3, 'out', 'self', { context_relation: 'anchor', payee_name: account });
-  return { account, anchor, total: 9, pos: 3, rows: [
+  return { account, anchor, total: 9, pos: 3, analysis_revision: 'b'.repeat(32), rows: [
     flow(11, 2, 'in', 'self', { trade_time: '2026-10-17 12:33:56', context_relation: 'before', review_roles: ['source'] }), anchor,
     flow(13, 4, 'out', 'counter', { balance: '-10000000000000.01', trade_time: '2026-10-17 12:35:56', context_relation: 'after', review_roles: ['target'] }),
     flow(14, 5, 'out', 'self', { trade_time: '2026-10-18 12:36:56', context_relation: 'after', review_roles: ['target'] })],
     review: { token: 'a'.repeat(32), pair: { status: 'unknown', candidate_ids: [] }, principal: { source: {
       status: 'unknown', assessment: [{ status: 'unknown', message: `合成来源证据-${account}` }],
       targets: [{ amount: '100.00', min: '0.00', max: '100.00', fifo: null }], currency: 'CNY' } } },
-    suggestions: { sources: [{ ids: ['11'], account: 'SYN-SOURCE', name: '合成来源', score: 88, evidence: {
-      judgment: '已记录账面支持部分关联，实际本金归属待核。', basis: '12:33:56 的 1 条流水是锚点前的候选入账。' } }],
+    suggestions: { sources: [{ ids: ['11'], account: 'SYN-SOURCE', name: '合成来源', score: 88, currency: 'CNY', evidence: {
+      conditional_group_share: { min: '0.00', max: '0.40' }, basis: '12:33:56 的 1 条流水是锚点前的候选入账。' } }],
       targets: [{ ids: ['13'], account: 'SYN-TARGET', name: '合成去向', score: 62 }] } };
 }
 async function opened(h, data = result()) { h.network(async () => data); await h.open(); }
@@ -224,22 +234,25 @@ test('bounded unknown posting windows disclose omitted ties in the existing deta
   const h = harness(), data = result();
   data.ordering = {status:'partial', reasons:['neighbor_boundary_order_unknown', 'posting_order_unknown']};
   await opened(h, data);
+  assert.deepEqual(h.element('ctxSuggest').querySelectorAll('h3').map(heading => heading.textContent), ['来源', '去向']);
   assert.match(h.element('ctxPos').textContent, /边界同刻记录无法排序，未任意截取/);
   assert.match(h.element('ctxPos').textContent, /同刻记录先后未确定/);
 });
 const cells = row => row.querySelectorAll('td');
 const picked = card => card.getAttribute('aria-pressed') === 'true' || card.classList.contains('picked');
 const sourceCard = h => h.cards().find(card => (card.dataset.ids || '').split(',').includes('11'));
+const cardJudgment = card => card.parentElement.querySelector('.sg-judgment').textContent;
 
-test('context rows retain original column order, exact money, direction and tracked membership', async () => {
+test('context rows display proved directions and maintain original order, exact money and tracking', async () => {
   const h = harness(), data = result(); data.rows[0].summary = '<img src=x onerror="SYN"> & "合成"';
+  Object.assign(data.rows[0].review_fields, { direction: null, book_direction_basis: 'source_own_endpoint' });
   data.rows[0].payer_name = '<b>合成来款方</b>'; await opened(h, data);
   const rows = h.rows(); assert.equal(rows.length, 4);
   for (const row of rows) assert.equal(cells(row).length, 14);
   assert.match(cells(rows[0])[4].textContent, /之前/); assert.match(cells(rows[1])[4].textContent, /本笔/);
   assert.match(cells(rows[2])[4].textContent, /之后/);
   assert.equal(cells(rows[0])[2].textContent, 'SYN-PAYEE');
-  assert.equal(cells(rows[0])[5].textContent, '贷'); assert.equal(cells(rows[2])[5].textContent, '借');
+  assert.equal(cells(rows[0])[5].textContent, '入账据收款方'); assert.equal(cells(rows[2])[5].textContent, '出账');
   assert.match(cells(rows[0])[6].textContent, /9,007,199,254,740,993\.07/);
   assert.equal(cells(rows[0])[7].textContent.trim(), '—'); assert.match(cells(rows[2])[7].textContent, /-10,000,000,000,000\.01/);
   assert.equal(cells(rows[0])[12].textContent, data.rows[0].summary); assert.equal(h.element('ctxTbody').innerHTML.includes('<img src=x'), false);
@@ -252,7 +265,7 @@ test('score click only highlights rows and shows evidence; checking manually con
   assert.equal(h.element('ctxTrack').disabled, true); assert.equal(h.element('ctxSelected').textContent, '已选 0 条');
   const card = sourceCard(h); assert.ok(card); assert.equal(card.tagName, 'BUTTON');
   assert.match(card.querySelector('.sg-score').textContent, /88/);
-  assert.equal(card.querySelector('.sg-judgment').textContent, '已记录账面支持部分关联，实际本金归属待核。');
+  assert.equal(cardJudgment(card), '');
   assert.equal(card.querySelector('.sg-evidence').hidden, true);
   await card.click(); assert.equal(h.box(11).checked, false); assert.equal(h.box(13).checked, false);
   assert.equal(h.rows()[0].classList.contains('clue-row'), true);
@@ -270,15 +283,17 @@ test('score click only highlights rows and shows evidence; checking manually con
 test('a filter that leaves only part of an existing clue hides its complete score and judgment', async () => {
   const h = harness(), data = result();
   data.suggestions.targets[0].ids = ['13', '14'];
-  data.suggestions.targets[0].evidence = { judgment: '完整组合可核对。', basis: '完整组合原行。' };
+  data.suggestions.targets[0].currency = 'CNY';
+  data.suggestions.targets[0].evidence = { conditional_group_share: { min: '0.20', max: '0.60' }, basis: '完整组合原行。' };
   await opened(h, data);
   assert.equal(h.cards().length, 2);
   const target = () => h.cards().find(card => card.dataset.key === 'target-0');
   assert.match(target().querySelector('.sg-score').textContent, /62/);
+  assert.equal(cardJudgment(target()), '');
   h.network(async () => ({}));
   await h.change('ctxEnd', '2026-10-17');
   assert.match(target().querySelector('.sg-score').textContent, /—/);
-  assert.doesNotMatch(target().querySelector('.sg-judgment').textContent, /完整组合/);
+  assert.equal(cardJudgment(target()), '筛选后只显示部分相关流水。');
   await target().click();
   assert.equal(h.rows().filter(row => row.classList.contains('clue-row')).length, 1);
   assert.equal(h.box(13).checked, false);
@@ -295,7 +310,7 @@ test('screening out an anchor hides the aggregate judgment while source mode alo
   await h.change('ctxEnd', '2026-10-17');
   const clue = sourceCard(h);
   assert.match(clue.querySelector('.sg-score').textContent, /—/);
-  assert.doesNotMatch(clue.querySelector('.sg-judgment').textContent, /部分关联/);
+  assert.doesNotMatch(cardJudgment(clue), /覆盖/);
   await clue.click();
   assert.equal(h.rows().filter(row => row.classList.contains('clue-row')).length, 1);
   assert.equal(h.box(11).checked, false);
@@ -401,11 +416,14 @@ test('close and reopen revoke both old GET responses and retained recommendation
 test('A-B-A and canvas navigation invalidate pending context responses', async () => {
   for (const navigate of [h => { h.selectCase(2); h.selectCase(1); }, h => { h.state.canvasId = 9; h.state.canvasGeneration += 1; }]) {
     const h = harness(), older = deferred(); h.network(() => older.promise); const pending = h.open(); navigate(h);
-    await opened(h, result('SYN-CURRENT-BINDING')); const heading = h.element('ctxPos').textContent;
-    older.resolve(result('SYN-STALE-BINDING')); await pending;
+    const fresh = result('SYN-CURRENT-BINDING'), late = result('SYN-STALE-BINDING');
+    fresh.suggestions.sources[0].name = '当前合成来源';
+    late.suggestions.sources[0].name = '过期合成来源';
+    await opened(h, fresh); const heading = h.element('ctxPos').textContent;
+    older.resolve(late); await pending;
     assert.equal(h.element('ctxPos').textContent, heading); assert.equal(h.state.ctx.data.account, 'SYN-CURRENT-BINDING');
-    assert.match(h.element('ctxSuggest').textContent, /合成来源证据-SYN-CURRENT-BINDING/);
-    assert.doesNotMatch(h.element('ctxSuggest').textContent, /合成来源证据-SYN-STALE-BINDING/);
+    assert.match(h.element('ctxSuggest').textContent, /当前合成来源/);
+    assert.doesNotMatch(h.element('ctxSuggest').textContent, /过期合成来源/);
   }
 });
 
@@ -442,17 +460,302 @@ test('late tracking completion cannot close or unlock a reopened context session
 test('automatic source assessment uses the existing context read and keeps original balances and scores', async () => {
   const h = harness(); await opened(h);
   assert.equal(h.requests.length, 1);
-  assert.match(h.element('ctxSuggest').textContent, /账面规则范围：—/);
-  assert.match(h.element('ctxSuggest').textContent, /FIFO 证据不足/);
+  assert.deepEqual(h.element('ctxSuggest').querySelectorAll('.sg-title').map(title => title.textContent), ['来源', '去向']);
+  assert.equal(cardJudgment(sourceCard(h)), '');
   assert.match(h.element('ctxSuggest').textContent, /88/);
   assert.match(h.rows()[2].textContent, /-10,000,000,000,000.01/);
   await h.mode('source');
   assert.equal(h.requests.length, 1, 'local filtering adds no analysis request');
-  assert.match(h.element('ctxSuggest').textContent, /账面规则范围：—/);
+  assert.equal(cardJudgment(sourceCard(h)), '');
   h.network(async () => ({}));
   await h.change('ctxEnd', '2026-10-17T12:34:30');
   assert.equal(h.element('ctxSuggest').querySelector('.context-score-note'), null);
   assert.doesNotMatch(h.element('ctxSuggest').textContent, /FIFO|条件范围/);
+});
+
+test('relationship summary shows only count and money and keeps actual date precision', async () => {
+  const h = harness(), data = result();
+  data.review.directional_funds = { forward: { status: 'partial', observation_count: 9, count: { lower: 0, upper: 1 },
+    totals: [{ amount: null, currency: 'CNY', lower: '0.00', upper: '0.40' }] },
+  booked: { forward: { cnt: 1, total: '0.40', amount_totals: [{ currency: 'CNY', amount: '0.40' }] } } };
+  data.rows[0].trade_time = '2026-10-17 00:00:00';
+  Object.assign(data.rows[0].review_fields, { trade_time_precision: 'date', trade_time_source_date: '2026-10-17' });
+  data.rows[1].trade_time = '2026-10-17 00:00:00';
+  await opened(h, data);
+  const line = h.element('ctxAnchor').querySelector('.context-line-caption').textContent;
+  assert.match(line, /1 笔 ¥0\.40/);
+  assert.doesNotMatch(line, /待核|记录|未核|–/);
+  assert.doesNotMatch(cells(h.rows()[0])[4].textContent, /00:00:00/);
+  assert.match(cells(h.rows()[1])[4].textContent, /00:00:00/);
+});
+
+test('source and target cards show only the scoped Qwen explanation, with one request per card', async () => {
+  const h = harness(), data = result();
+  h.run('window.FundsDesktopPreferences = {}');
+  const checks = {ledger_roles:true, currency_amount:true, order:true, own_balance:true, adjacent_balances:false, interval_records:true};
+  Object.assign(data.suggestions.sources[0].evidence, { checks, conditional_group_share: null });
+  data.suggestions.sources[0].score = 83;
+  data.suggestions.targets[0].evidence = { checks, conditional_group_share: { min: '0.00', max: '1.00' } };
+  h.network(async (path, options) => {
+    if (path.endsWith('/model-trial/status')) return { enabled: true, configured: true };
+    if (!path.endsWith('/review-model-trial')) return data;
+    const body = JSON.parse(options.body);
+    assert.equal(body.explain, true);
+    assert.deepEqual([body.kind, body.group_flow_id], body.kind === 'trace_source' ? ['trace_source', '11'] : ['trace_target', '13']);
+    return { state: body.kind === 'trace_source' ? 'proposal' : 'rule', explanation_calls: 1, explanation_model: 'qwen35-4b',
+      explanation: body.kind === 'trace_source' ? '还要核对本方余额，才能追查这笔钱。' : '这笔入账最多可覆盖这笔支出中的 ¥1.00。',
+      packet: { facts: { case_id: '1', canvas_id: '0', kind: body.kind,
+        anchor_id: '12', group_flow_id: body.group_flow_id, revision: data.analysis_revision } } };
+  });
+  await h.open();
+  const target = h.cards().find(card => card.dataset.key === 'target-0');
+  await target.click(); await flush();
+  assert.equal(cardJudgment(target), '这笔入账最多可覆盖这笔支出中的 ¥1.00。');
+  const card = sourceCard(h);
+  await card.click(); await flush();
+  assert.equal(cardJudgment(card), '还要核对本方余额，才能追查这笔钱。');
+  assert.match(card.querySelector('.sg-evidence').textContent, /核对通过 5\/6 项，待核对侧余额/);
+  assert.equal(card.parentElement.querySelectorAll('.sg-judgment').length, 1);
+  await card.click(); await card.click(); await flush();
+  assert.equal(h.requests.filter(request => request.path.endsWith('/review-model-trial')).length, 2);
+  assert.equal(h.trackCalls.length, 0);
+});
+
+test('the ordinary review shows time exclusion and its source rows while the amount is pending', async () => {
+  const h = harness(), data = result();
+  h.run('window.FundsDesktopPreferences = {}');
+  data.suggestions.sources.push({ ids: ['14'], account: 'SYN-SECOND-SOURCE', name: '合成来源二', score: 60 });
+  const sourceId = '2'.repeat(32);
+  h.network(async (path, options) => {
+    if (path.endsWith('/model-trial/status')) return { enabled: true, configured: false };
+    if (path.includes('/record/')) return { originals: [] };
+    if (!path.endsWith('/review-model-trial')) return data;
+    const body = JSON.parse(options.body);
+    assert.deepEqual(body.group_flow_ids, ['11', '14']);
+    return { state: 'pending', reason: 'trace_time_exclusion', receipt: { status: 'pending', proposition: 'conditional_range' },
+      packet: { facts: { case_id: '1', canvas_id: '0', revision: data.analysis_revision,
+        kind: body.kind, anchor_id: body.anchor_id, group_flow_ids: body.group_flow_ids,
+        source_refs: ['F11', 'F14'], target_refs: ['F12'], checks: { interval_records: false },
+        reasons: ['unresolved_source_records'] },
+      records: ['F11', 'F12', 'F14'].map((id, index) => ({ id,
+        raw: { trade_time_wall: id === 'F12' ? '2026-07-05 10:00:00' : '2026-07-05 10:01:00' },
+        structured: {}, locator: { source_id: sourceId,
+          source_row: index + 2, member_path: 'table.csv', file_url: '/synthetic-original' } })) } };
+  });
+  await h.open();
+  await h.element('ctxTbody').querySelector('.ctx-record[data-id="12"]').click();
+  await flush();
+  const actions = h.element('ctxDetailContent').querySelector('.context-review-actions');
+  assert.ok(actions && !actions.hidden, h.element('ctxDetailContent').textContent);
+  const chooser = actions.querySelector('select');
+  chooser.value = '1';
+  await chooser.fire('change').completion;
+  await actions.querySelector('button').click();
+  assert.equal(actions.querySelector('[role="status"]').textContent,
+    '原表交易时钟显示，所选出账早于所选入账。若这一时钟反映资金可用顺序，可排除这组入账为这些出账提供资金。');
+  assert.match(actions.textContent, /资金份额待核，需核清区间内收支是否完整/);
+  assert.match(actions.textContent, /案内有尚未界定账簿或时段的来源记录/);
+  assert.equal(actions.querySelectorAll('a').length, 3);
+  assert.match(actions.textContent, /原行 3 · 出账 · 2026-07-05 10:00:00/);
+  assert.equal(h.trackCalls.length, 0);
+});
+
+for (const configured of [false, true]) test(`the joint review shows necessary upper limits (model configured: ${configured})`, async () => {
+  const h = harness(), data = result();
+  const account = data.anchor.self_account;
+  for (const row of data.rows) {
+    const incoming = row.id === 11 || row.id === 13;
+    Object.assign(row, { self_account: account, payer_account: incoming ? 'SYN-COUNTER' : account,
+      payee_account: incoming ? account : 'SYN-COUNTER' });
+  }
+  h.run('window.FundsDesktopPreferences = {}');
+  const explainRequests = [], firstExplanation = deferred();
+  const sourceId = '3'.repeat(32), file = `/api/v1/cases/1/sources/${sourceId}/file`;
+  h.network(async (path, options) => {
+    if (path.endsWith('/model-trial/status')) return { enabled: true, configured };
+    if (path.includes('/record/14?')) return { originals: [{
+      filename: '合成原件', member_path: 'table.csv', source_row: 5, download_url: file,
+      cells: [{ header: '合成栏名', value: '可回查原格' }],
+    }] };
+    if (path.includes('/record/')) return { originals: [] };
+    if (!path.endsWith('/review-model-trial')) return data;
+    const body = JSON.parse(options.body);
+    assert.equal(body.kind, 'trace_source');
+    assert.deepEqual(body.source_flow_ids, ['11', '13']);
+    assert.deepEqual(body.target_flow_ids, ['12', '14']);
+    if (body.explain) explainRequests.push(options.signal);
+    const sequence = explainRequests.length;
+    if (body.explain && sequence === 1) await firstExplanation.promise;
+    return { state: 'pending', reason: 'ledger_evidence_missing',
+      ...(body.explain ? { explanation: '已核证的条件上界和限制。', explanation_calls: 1, explanation_model: 'qwen35-4b' } : {}),
+      receipt: { status: 'pending', proposition: 'conditional_range' },
+      packet: { packet_sha256: sequence > 2 ? 'changed-packet' : 'initial-packet', facts: { case_id: '1', canvas_id: '0', revision: data.analysis_revision,
+        kind: body.kind, anchor_id: body.anchor_id, selected_source_flow_ids: body.source_flow_ids,
+        selected_target_flow_ids: body.target_flow_ids, source_count: 2, target_count: 2,
+        selected_order_upper_bound: { currency: 'CNY', joint_upper: '5.37', same_direction_ties: true, targets: [
+          { ref: 'F12', source_row: 3, upper: '3.35', later_source_rows: [4] },
+          { ref: 'F14', source_row: 5, upper: '2.02', later_source_rows: [] },
+        ] }, target_refs: ['F14'],
+        checks: { own_balance: false, interval_records: false }, reasons: [] },
+        records: [{ id: 'F14', raw: {}, locator: { source_id: sourceId, member_path: 'table.csv',
+          source_row: 5, file_url: file } }] } };
+  });
+  await h.open();
+  await h.element('ctxTbody').querySelector('.ctx-record[data-id="12"]').click();
+  await flush();
+  const actions = h.element('ctxDetailContent').querySelector('.context-review-actions');
+  const chooser = actions.querySelector('select');
+  chooser.value = '1';
+  await chooser.fire('change').completion;
+  for (const input of actions.querySelectorAll('input[name]')) input.checked = true;
+  await actions.querySelector('button').click();
+  assert.equal(actions.querySelector('[role="status"]').textContent,
+    '按下列条件，所选入账合计至多承接 CNY 5.37。实际份额待核。');
+  assert.match(actions.textContent, /原交易时钟反映资金可用顺序。同笔入账分给各目标的金额合计不超过该笔金额/);
+  assert.match(actions.textContent, /所选同刻同向的原行各自保留，先后不影响上界/);
+  assert.match(actions.textContent, /原行 3 出账单独核算，至多承接 CNY 3\.35。可排除较晚的入账原行 4/);
+  assert.match(actions.textContent, /原行 5 出账单独核算，至多承接 CNY 2\.02/);
+  assert.match(actions.textContent, /实际份额需核清本方余额是否为笔后账面余额、区间内收支是否完整/);
+  assert.equal(explainRequests.length, 0);
+  const action = [...actions.querySelectorAll('button')].find(item => item.textContent === '解释这组上界');
+  assert.equal(!!action, configured);
+  if (configured) {
+    const pendingExplanation = action.click();
+    await flush();
+    assert.equal(explainRequests.length, 1);
+    assert.equal(action.disabled, true);
+    const original = actions.querySelectorAll('button').find(item => item.textContent === '查看原行 5');
+    await original.click();
+    assert.equal(explainRequests[0].aborted, true);
+    const back = actions.querySelectorAll('button').find(item => item.textContent === '返回核证结果');
+    await back.click();
+    assert.equal(action.disabled, false);
+    assert.doesNotMatch(actions.textContent, /正在生成说明/);
+    firstExplanation.resolve();
+    await pendingExplanation;
+    assert.doesNotMatch(actions.textContent, /已核证的条件上界和限制/);
+    await action.click();
+    assert.equal(explainRequests.length, 2);
+    assert.equal(actions.querySelector('[aria-label="条件上界说明"]').textContent, '已核证的条件上界和限制。');
+    await action.click();
+    assert.equal(explainRequests.length, 3);
+    assert.equal(actions.querySelector('[aria-label="条件上界说明"]'), null);
+    assert.match(actions.textContent, /原件或所选流水已更新/);
+  }
+  assert.equal(h.trackCalls.length, 0);
+});
+
+async function citedUpperBound(h, readOriginal, { cited = true } = {}) {
+  const data = result();
+  data.suggestions.targets[0].anchor_ids = ['12'];
+  const sourceId = '2'.repeat(32), member = 'synthetic.xlsx/worksheets/0001';
+  const file = `/api/v1/cases/1/sources/${sourceId}/file`;
+  const original = { filename: '合成目标', member_path: member, source_row: 96, download_url: file,
+    cells: [{ header: '合成栏名', value: '合成目标原格' }] };
+  h.run('window.FundsDesktopPreferences = {}');
+  h.network(async (path, options) => {
+    if (path.endsWith('/model-trial/status')) return { enabled: true, configured: false };
+    if (path.includes('/record/13?')) {
+      assert.equal(path, '/api/context/12/record/13?case_id=1&canvas_id=0');
+      assert.equal(options.headers['X-FundsTrace-Review'], data.review.token);
+      return readOriginal(original, options);
+    }
+    if (path.includes('/record/')) return { originals: [] };
+    if (!path.endsWith('/review-model-trial')) return data;
+    const body = JSON.parse(options.body);
+    assert.equal(body.kind, 'trace_target');
+    assert.equal(body.group_flow_id, '13');
+    return { state: 'pending', reason: 'ledger_evidence_missing',
+      packet: { facts: { case_id: '1', canvas_id: '0', revision: data.analysis_revision,
+        kind: body.kind, anchor_id: body.anchor_id, group_flow_id: body.group_flow_id, target_refs: ['F13'],
+        selected_order_upper_bound: { currency: 'CNY', joint_upper: '3.35',
+          targets: [{ ref: 'F13', source_row: 96, upper: '3.35', later_source_rows: [97] }] } },
+      records: [{ id: 'F13', raw: {}, locator: { source_id: sourceId, member_path: member,
+        source_row: 96, file_url: cited ? file : null } }] } };
+  });
+  await h.open();
+  await h.element('ctxTbody').querySelector('.ctx-record[data-id="12"]').click();
+  await flush();
+  const actions = h.element('ctxDetailContent').querySelector('.context-review-actions');
+  assert.ok(actions && !actions.hidden);
+  const picker = actions.querySelector('select');
+  picker.value = '1';
+  await picker.fire('change').completion;
+  await actions.querySelector('button').click();
+  const button = actions.querySelectorAll('button').find(item => item.textContent === '查看原行 96');
+  return { actions, button };
+}
+
+test('the cited upper-bound original opens in scope and returns to the same result', async () => {
+  const h = harness();
+  const { actions, button } = await citedUpperBound(h, item => ({ originals: [
+    { ...item, member_path: 'elsewhere.xlsx', cells: [{ header: '合成栏名', value: '合成错表原格' }] },
+    item,
+  ] }));
+  assert.ok(button);
+  assert.equal(button.tagName, 'BUTTON');
+  assert.match(actions.textContent, /可排除较晚的入账原行 97/);
+  await button.click();
+  assert.match(actions.textContent, /合成目标原格/);
+  assert.doesNotMatch(actions.textContent, /合成错表原格/);
+  const back = actions.querySelectorAll('button').find(item => item.textContent === '返回核证结果');
+  assert.ok(back);
+  assert.equal(h.document.activeElement, back);
+  await back.click();
+  assert.equal(h.document.activeElement, button);
+  assert.match(actions.textContent, /至多承接 CNY 3\.35/);
+  assert.doesNotMatch(actions.textContent, /合成目标原格/);
+  assert.equal(h.requests.filter(item => item.path.endsWith('/review-model-trial')).length, 1);
+});
+
+for (const mode of ['withdrawn', 'case changed', 'unavailable']) test(`the cited upper-bound original rejects ${mode} evidence`, async () => {
+  const h = harness(), pending = deferred();
+  let read;
+  const { actions, button } = await citedUpperBound(h, (original, options) => {
+    read = { original, options };
+    if (mode === 'withdrawn') throw Object.assign(new Error('合成撤回'), { status: 409 });
+    return pending.promise;
+  }, { cited: mode !== 'unavailable' });
+  if (mode === 'unavailable') {
+    assert.equal(button, undefined);
+    assert.match(actions.textContent, /原行 96 出账/);
+    return;
+  }
+  assert.ok(button);
+  const clicked = button.click();
+  await flush();
+  assert.ok(read);
+  if (mode === 'case changed') {
+    await h.selectCase(2);
+    assert.equal(read.options.signal.aborted, true);
+    pending.resolve({ originals: [read.original] });
+  }
+  await clicked;
+  assert.doesNotMatch(h.element('ctxDetailContent').textContent, /合成目标原格/);
+  assert.equal(h.element('ctxModal').style.display, 'none');
+});
+
+test('closing the review aborts an in-place model request and discards its late citation', async () => {
+  const h = harness(), data = result(), late = deferred();
+  h.run('window.FundsDesktopPreferences = {}');
+  Object.assign(data.suggestions.sources[0].evidence, { checks: { ledger_roles: true, currency_amount: true }, conditional_group_share: null });
+  h.network(async path => {
+    if (path.endsWith('/model-trial/status')) return { enabled: true, configured: true };
+    if (path.endsWith('/review-model-trial')) return late.promise;
+    return data;
+  });
+  await h.open();
+  await sourceCard(h).click(); await flush();
+  const request = h.requests.find(item => item.path.endsWith('/review-model-trial'));
+  assert.ok(request);
+  await h.close();
+  assert.equal(request.options.signal.aborted, true);
+  await opened(h);
+  late.resolve({ state: 'proposal', explanation_calls:1, explanation_model:'qwen35-4b', explanation:'过期的说明。',
+    packet: { facts: { case_id: '1', canvas_id: '0', kind: 'trace_source',
+      anchor_id: '12', group_flow_id: '11', revision: data.analysis_revision } } });
+  await flush();
+  assert.doesNotMatch(h.element('ctxSuggest').textContent, /过期的说明/);
 });
 
 test('source detail uses the bound token, leaves checks intact and discards late raw content', async () => {
@@ -473,4 +776,110 @@ test('source detail uses the bound token, leaves checks intact and discards late
   assert.equal(h.element('ctxDetailContent').textContent, '');
   assert.equal(h.box(11).checked, true);
   assert.equal(h.element('ctxTrack').disabled, false);
+});
+
+const fieldScope = {
+  source_id: '2'.repeat(32), sha256: 'c'.repeat(64), parser_version: 'funds-trace-table-v87',
+  member_path: 'table.csv', source_row: 2, header_row: 1,
+};
+const fieldOriginal = {
+  filename: 'synthetic.csv', member_path: 'table.csv', source_row: 2, download_url: '/synthetic-original',
+  citation_scope: fieldScope, cells: [
+    { column: 3, header: '对方账号', value: 'SYN-SAME' },
+    { column: 8, header: '备注', value: 'SYN-SAME' },
+  ],
+};
+
+function fieldReceipt(body, evidence_status) {
+  return { ...body, flow_id: '11', classification: 'rule_control', business_status: 'pending', evidence_status };
+}
+
+async function selectField(h, column = '3') {
+  await h.element('ctxTbody').querySelector('.ctx-record[data-id="11"]').click();
+  assert.ok(h.element('ctxVerifyField').disabled);
+  await h.change('ctxFieldCandidate', 'account');
+  await h.change('ctxFieldColumn', column);
+  assert.equal(h.element('ctxVerifyField').disabled, false);
+}
+
+test('original citation support and refusal stay in the review; only a manual checkbox tracks', async () => {
+  const h = harness(); await opened(h);
+  h.network(async (_path, options) => {
+    if (!options.body) return { originals: [fieldOriginal] };
+    const body = JSON.parse(options.body);
+    assert.equal(options.headers['X-FundsTrace-Review'], h.state.ctx.data.review.token);
+    assert.deepEqual(body, { case_id: 1, canvas_id: 0, analysis_revision: 'b'.repeat(32), candidate: 'account',
+      citation: { ...fieldScope, column: body.citation.column } });
+    return fieldReceipt(body, body.citation.column === 3 ? 'supported' : 'refuted');
+  });
+  await sourceCard(h).click();
+  await selectField(h, '8'); await h.element('ctxVerifyField').click();
+  assert.match(h.element('ctxFieldStatus').textContent, /拒绝所引原列.*业务判断待核/);
+  await h.change('ctxFieldColumn', '3'); await h.element('ctxVerifyField').click();
+  assert.match(h.element('ctxFieldStatus').textContent, /核证时的修订支持原第 2 行第 3 列.*业务判断待核/);
+  assert.deepEqual(h.element('ctxDetailContent').querySelectorAll('dt').map(node => node.textContent), ['对方账号', '备注']);
+  assert.equal(h.element('ctxDetailContent').querySelector('a').getAttribute('href'), '/synthetic-original');
+  await h.element('ctxDetailBack').click();
+  const card = sourceCard(h);
+  assert.match(card.querySelector('.sg-score').textContent, /88/);
+  assert.equal(cardJudgment(card), '');
+  assert.match(card.querySelector('.sg-field-receipt').textContent, /核证时的修订.*业务判断待核/);
+  assert.equal(h.element('ctxTrack').disabled, true);
+  assert.equal(h.box(11).checked, false);
+  assert.equal(h.trackCalls.length, 0);
+  await h.check(11, true); await h.submit(); assert.deepEqual(h.trackCalls, [['11']]);
+});
+
+test('late original citation response cannot paint in an A-B-A case binding', async () => {
+  const h = harness(), pending = deferred(); let body;
+  await opened(h);
+  h.network(async (_path, options) => {
+    if (!options.body) return { originals: [fieldOriginal] };
+    body = JSON.parse(options.body);
+    return pending.promise;
+  });
+  await selectField(h);
+  const admitted = h.element('ctxVerifyField').click();
+  await flush();
+  assert.match(h.element('ctxFieldStatus').textContent, /正在核证/);
+  h.selectCase(2); h.selectCase(1);
+  await opened(h, result('SYN-REBOUND'));
+  pending.resolve(fieldReceipt(body, 'supported'));
+  await admitted;
+  assert.equal(h.element('ctxFieldStatus'), null);
+  assert.doesNotMatch(h.element('ctxSuggest').textContent, /核证时的修订/);
+  assert.equal(h.state.ctx.data.account, 'SYN-REBOUND');
+});
+
+test('local batch withdrawal revokes pending original citation display before awaiting the write', async () => {
+  const h = harness(), proof = deferred(), removed = deferred(); let body;
+  await opened(h);
+  h.network(async (_path, options) => {
+    if (!options.body) return { originals: [fieldOriginal] };
+    body = JSON.parse(options.body);
+    return proof.promise;
+  });
+  await selectField(h);
+  const admission = h.element('ctxVerifyField').click();
+  await flush();
+  h.run(section('async function deleteBatch(', 'function bindBatchUI('));
+  h.run(`const batchForWithdrawal = { id: 51, filename: 'synthetic.csv' };
+    const batchView = { rows: [batchForWithdrawal] };
+    const batchCurrent = () => true;
+    const closeBatchMenu = () => {}, setBatchBusy = () => {}, renderBatchRows = () => {}, showBatchFeedback = () => {};
+    const confirm = () => true, refreshAll = async () => {};
+    let removalStarted = false;`);
+  h.run('const batchRequest = async () => { removalStarted = true; await window.testBatchRemoval; };');
+  h.run('window').testBatchRemoval = removed.promise;
+  const removal = h.run('deleteBatch(batchForWithdrawal, caseContext())');
+  await flush();
+  assert.equal(h.run('removalStarted'), true);
+  assert.equal(h.state.ctx.closed, true);
+  assert.equal(h.element('ctxDetailContent').textContent, '');
+  proof.resolve(fieldReceipt(body, 'supported'));
+  await admission;
+  assert.equal(h.element('ctxDetailContent').textContent, '');
+  assert.equal(h.element('ctxSuggest').textContent, '');
+  removed.resolve();
+  await removal;
 });

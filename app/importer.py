@@ -714,7 +714,7 @@ def _row_key(r, default_currency=""):
 def _provenance_metadata(provenance, filename, mode, rows, *, _row_refs=None):
     """Validate trusted parser metadata before any persistent write."""
     source = dict(provenance)
-    from . import table_import, table_archive
+    from . import pdf_import, pdf_text_import, pdf_text_observations, table_import, table_archive
     table_source = (source.get("row_kind") == table_import.ROW_KIND
                     and source.get("parser_version") in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES))
     source.setdefault("row_kind", rows[0].get("_source_row_kind") if rows else "unknown")
@@ -730,8 +730,24 @@ def _provenance_metadata(provenance, filename, mode, rows, *, _row_refs=None):
             or type(source.get("size_bytes")) is not int or source["size_bytes"] < 0
             or source.get("mode") != mode or mode not in MODE_FIELDS
             or source.get("filename") != filename or not isinstance(filename, str) or not filename
-            or not isinstance(source.get("sheet"), str)
-            or source.get("row_kind") not in ("csv_record", "worksheet_row", "archive_record", "table_record", "unknown")
+            or not isinstance(source.get("sheet"), str)):
+        raise ImportError("来源元数据无效")
+    if source.get("parser_version") in (pdf_import.PROFILE, *pdf_text_observations.PROFILES):
+        reader = pdf_import if source["parser_version"] == pdf_import.PROFILE else pdf_text_observations
+        if rows or not reader.valid_source(filename, source["size_bytes"], mode, mapping,
+                                           source["sheet"], source["row_kind"]):
+            raise ImportError("PDF 来源只能保存待核对候选")
+        return source
+    if source.get("parser_version") == pdf_text_import.PROFILE:
+        if (not pdf_text_import.valid_source(filename, source["size_bytes"], mode, mapping, source["sheet"], source["row_kind"])
+                or not 1 <= len(rows) <= pdf_text_import.MAX_ROWS
+                or any(row.get("_source_row") != number or row.get("_source_sheet") != ""
+                       or row.get("_source_row_kind") != pdf_text_import.ROW_KIND
+                       or row.get("_record_key") != table_import.record_key(pdf_text_import.MEMBER_PATH, source["sha256"], number)
+                       for number, row in enumerate(rows, 1))):
+            raise ImportError("PDF 交易来源位置或元数据无效")
+        return source
+    if (source.get("row_kind") not in ("csv_record", "worksheet_row", "archive_record", "table_record", "unknown")
             or (source.get("row_kind") == table_import.ROW_KIND) != table_source
             or (source.get("parser_version") in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)) != table_source
             or not isinstance(source.get("parser_version"), str) or not source["parser_version"]
@@ -741,6 +757,8 @@ def _provenance_metadata(provenance, filename, mode, rows, *, _row_refs=None):
             or (not table_source and not _validate(mapping, mode))
             or suffix not in (".csv", ".tsv", ".txt", ".xlsx", ".xls", ".zip", ".rar")
             or (source.get("parser_version") in table_import.STANDALONE_XLS_PROFILES and suffix != ".xls")
+            or (source.get("parser_version") in table_import.TRIAL_XLSX_PROFILES and suffix != ".xlsx")
+            or (source.get("parser_version") == table_import.CODED_BANK_CSV_TRIAL_PROFILE and suffix != ".csv")
             or (suffix in (".xlsx", ".xls")) != bool(source.get("sheet"))
             or (source["row_kind"] == "worksheet_row" and suffix not in (".xlsx", ".xls"))
             or (source["row_kind"] == "csv_record" and suffix in (".xlsx", ".xls", ".zip", ".rar"))
@@ -784,12 +802,14 @@ def _flow_insert_values(row):
 
 
 def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, provenance=None,
-                standalone_csv_keys=None, *, refresh_source_index=True):
+                standalone_csv_keys=None, *, refresh_source_index=True, trial_occurrence_links=None,
+                verified_reference_rows=()):
     """去重后分批入库（去重范围为当前案件内），progress_cb(done, total) 汇报进度。
     去重规则：所有导入列完全一致才判为重复——任一列（如余额、摘要、对手）不同均视为不同流水。"""
-    from . import table_archive, table_import
+    from . import pdf_text_import, table_archive, table_import
     from . import evidence_resolution
     from .import_staging import StagedSequence
+    trial_occurrence_links = trial_occurrence_links or {}
     # Keep canonical objects alive until the unchanged requested rebuild.
     validated_rows = None
     if (type(rows) is StagedSequence and type(provenance) is dict
@@ -805,11 +825,23 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
         source = _provenance_metadata(provenance, filename, mode, rows)
     else:
         source = _provenance_metadata(provenance, filename, mode, rows, _row_refs=validated_rows)
+    reference_rows = {}
+    if verified_reference_rows:
+        if (type(verified_reference_rows) is not dict or not source
+                or source["parser_version"] != table_import.VOUCHER_REFERENCE_PROFILE
+                or Path(filename).suffix.lower() != ".xlsx"):
+            raise ImportError("独立凭证只可核对已登记的原工作簿")
+        reference_rows = {row["_source_row"]: row for row in rows if row["_source_row"] in verified_reference_rows}
+        if (reference_rows.keys() != verified_reference_rows.keys()
+                or any(row["trade_no"] for row in reference_rows.values())
+                or any(not table_import.VERIFIED_REFERENCE_OCCURRENCE_FORMAT.fullmatch(value)
+                       for value in verified_reference_rows.values())):
+            raise ImportError("独立凭证记录的原主号或行范围已变化")
     if isinstance(rows, StagedSequence) and source is not None and source["parser_version"] in evidence_resolution.OCCURRENCE_PROFILES:
         if standalone_csv_keys is not None:
             raise ImportError("证据来源不接受历史CSV替代身份")
         return _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, source,
-                                       refresh_source_index=refresh_source_index)
+                                       refresh_source_index=refresh_source_index, trial_occurrence_links=trial_occurrence_links)
     if standalone_csv_keys is not None:
         if (source is None or source["row_kind"] != table_import.ROW_KIND
                 or source["parser_version"] not in table_archive.SUPPORTED_PROFILES
@@ -824,7 +856,8 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
             raise ImportError("案件不存在，无法导入流水")
         key_cols = ("trade_no, trade_time, payer_name, payer_account, payer_bank, "
                     "payee_name, payee_account, payee_bank, amount, balance, currency, summary, channel, trade_time_utc, trade_time_original, trade_time_offset")
-        archive = source is not None and (source["row_kind"] == "archive_record"
+        pdf_text = source is not None and source["parser_version"] == pdf_text_import.PROFILE
+        archive = source is not None and (pdf_text or source["row_kind"] == "archive_record"
                   or source["row_kind"] == "table_record" and source["parser_version"] in table_archive.SUPPORTED_PROFILES)
         from . import evidence_resolution
         evidence_source = source is not None and source["parser_version"] in evidence_resolution.OCCURRENCE_PROFILES
@@ -882,6 +915,10 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
                       f.flow_id, r.record_no""")
                 parameters += [*archive_profiles, *table_profiles]
             else:
+                if pdf_text:
+                    query += """ and exists(select 1 from import_sources p where p.case_id=r.case_id
+                        and p.source_id=r.source_id and p.parser_version=?)"""
+                    parameters.append(pdf_text_import.PROFILE)
                 query += " order by f.flow_id"
             requested = {row["_record_key"]: row for row in rows} if envelope and has_history else {}
             validated_rows = None
@@ -964,6 +1001,16 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
                     requested.add(key)
             parameters = [[key[index] for key in requested] for index in range(3)] + [case_id]
             del requested
+            trial_guard = ""
+            if source is not None and source["parser_version"] in table_import.TRIAL_TABLE_PROFILES:
+                trial_guard = f"""and not exists (select 1 from flow_sources f
+                    join import_sources s using(case_id,source_id)
+                    join import_source_operations op using(case_id,source_id)
+                    join import_records r on r.case_id=f.case_id and r.source_id=f.source_id and r.record_no=f.source_row
+                    where f.case_id=flows.case_id and f.flow_id=flows.id and op.active
+                      and s.parser_version=? and json_extract_string(r.details_json,'$.{table_import.TRIAL_MEMBER_PROFILE_FIELD}') is not null)"""
+                parameters.append(table_import.TRIAL_MEMBER_ARCHIVE_PROFILE)
+            reference_field = table_import.VERIFIED_REFERENCE_OCCURRENCE
             cursor = con.execute(f"""select id,{key_cols} from flows semi join (
                 select unnest(?::varchar[]) wanted_trade_no,
                        unnest(?::varchar[]) wanted_payer_account,
@@ -971,13 +1018,40 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
                 ) wanted on coalesce(flows.trade_no,'')=wanted.wanted_trade_no
                   and coalesce(flows.payer_account,'')=wanted.wanted_payer_account
                   and coalesce(flows.payee_account,'')=wanted.wanted_payee_account
-                where case_id = ? order by id""", parameters)
+                where case_id = ? {trial_guard}
+                  and (coalesce(trade_no,'')<>'' or not exists (
+                    select 1 from flow_sources f join import_records r
+                      on r.case_id=f.case_id and r.source_id=f.source_id and r.record_no=f.source_row
+                    join import_source_operations op on op.case_id=r.case_id and op.source_id=r.source_id and op.active
+                    where f.case_id=flows.case_id and f.flow_id=flows.id
+                      and r.disposition in ('imported','duplicate')
+                      and json_extract_string(r.details_json,'$.{reference_field}') is not null))
+                order by id""", parameters)
             del parameters
             names = [column[0] for column in cursor.description]
             while candidates := cursor.fetchmany(1024):
                 for values in candidates:
                     record = dict(zip(names, values))
                     existing.setdefault(_row_key(record), record["id"])
+            if reference_rows:
+                by_key = {verified_reference_rows[number]: row for number, row in reference_rows.items()}
+                fields = (*map(str.strip, key_cols.split(",")), "self_account", "self_name")
+                reference_fields = ",".join("v." + field for field in fields)
+                cursor = con.execute(f"""select json_extract_string(r.details_json,'$.{reference_field}'),v.id,
+                    {reference_fields} from import_records r
+                    join flow_sources f on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
+                    join import_source_operations op on op.case_id=r.case_id and op.source_id=r.source_id and op.active
+                    join flows v on v.case_id=f.case_id and v.id=f.flow_id
+                    where r.case_id=? and json_extract_string(r.details_json,'$.{reference_field}')
+                      in (select unnest(?::varchar[]))
+                      and r.disposition in ('imported','duplicate')
+                      and json_extract_string(r.details_json,'$.{table_import.VERIFIED_REFERENCE_DETAIL}')=?
+                    order by v.id""", [case_id, list(by_key), table_import.VERIFIED_REFERENCE_POLICY])
+                for occurrence, flow_id, *values in cursor.fetchall():
+                    requested, stored = by_key[occurrence], dict(zip(fields, values, strict=True))
+                    if (_row_key(requested, default_currency="CNY") == _row_key(stored)
+                            and all((requested[field] or "") == (stored[field] or "") for field in fields[-2:])):
+                        existing.setdefault(("verified_reference_row", occurrence), flow_id)
 
         seen, final, references, dup = {}, [], [], 0
         batch_accts = set()
@@ -986,6 +1060,11 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
             # genuinely unknown currency values in an existing database.
             k = ((r["_occurrence_key"], r.get("_occurrence_scope") or "", _row_key(r, default_currency="CNY"), r.get("self_account") or "", r.get("self_name") or "")
                  if evidence_source else r.get("_source_posting_record_key", r["_record_key"]) if archive else _row_key(r, default_currency="CNY"))
+            if r.get("_source_row") in reference_rows:
+                k = ("verified_reference_row", verified_reference_rows[r["_source_row"]])
+            elif previous := trial_occurrence_links.get(r.get("_source_row")):
+                k = ("trial_occurrence", previous)
+                existing[k] = previous
             if k in existing or k in seen:
                 dup += 1
                 if source:
@@ -1164,33 +1243,57 @@ class _StagedIdentityIndex:
             self.pending_bytes = 0
 
 
-def _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, source, *, refresh_source_index=True):
+def _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, source, *, refresh_source_index=True,
+                            trial_occurrence_links=None):
     """Bounded writer, retaining one source/batch and the caller's transaction."""
-    from . import evidence_resolution, analysis_snapshot
+    from . import evidence_resolution, analysis_snapshot, table_import
     from .import_staging import PLAN_CHUNK_BYTES, _encode_value
+    trial_occurrence_links = trial_occurrence_links or {}
     fields = ["trade_no", "trade_time", "payer_name", "payer_account", "payer_bank",
               "payee_name", "payee_account", "payee_bank", "amount", "balance", "currency", "summary", "channel",
               "self_account", "self_name", "trade_time_utc", "trade_time_original", "trade_time_offset"]
     def identity(row, occurrence, scope, *, incoming=False):
-        return (occurrence, scope or "", _row_key(row, default_currency="CNY" if incoming else ""),
-                row.get("self_account") or "", row.get("self_name") or "")
+        facts = _row_key(row, default_currency="CNY" if incoming else "")
+        if occurrence.startswith(evidence_resolution.TRIAL_LEAF_OCCURRENCE_PREFIX):
+            return occurrence, facts
+        return occurrence, scope or "", facts, row.get("self_account") or "", row.get("self_name") or ""
     with db.transaction() as con:
         if not db.q("select id from cases where id=?", [case_id]):
             raise ImportError("案件不存在，无法导入流水")
         known = _StagedIdentityIndex(rows.store)
-        profiles = sorted(evidence_resolution.OCCURRENCE_PROFILES)
-        cursor = con.execute("select m.sha256,r.source_row,f.flow_id,json_extract_string(r.details_json,'$.occurrence_scope')," + ",".join("v." + name for name in fields) + f"""
+        trial_archive = source["parser_version"] == table_import.TRIAL_MEMBER_ARCHIVE_PROFILE
+        profiles = sorted(evidence_resolution.OCCURRENCE_PROFILES |
+                          (table_import.TRIAL_TABLE_PROFILES if trial_archive else set()))
+        trial_fields = (f"""s.parser_version,json_extract_string(r.details_json,'$.{table_import.TRIAL_MEMBER_PROFILE_FIELD}'),
+            json_extract_string(r.details_json,'$.evidence_family'),exists(select 1 from import_source_operations op
+                where op.case_id=s.case_id and op.source_id=s.source_id and op.active),""" if trial_archive else "")
+        cursor = con.execute("select m.sha256,r.source_row,f.flow_id,json_extract_string(r.details_json,'$.occurrence_scope'),"
+            + trial_fields + ",".join("v." + name for name in fields) + f"""
             from import_records r join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
             join flow_sources f on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
             join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
             join flows v on v.case_id=f.case_id and v.id=f.flow_id
             where r.case_id=? and s.parser_version in ({','.join('?' for _ in profiles)})
             and r.disposition in ('imported','duplicate') order by f.flow_id""", [case_id, *profiles])
+        ambiguous = None
         while values := cursor.fetchmany(WRITE_CHUNK):
             for digest, position, fid, scope, *facts in values:
-                key = identity(dict(zip(fields, facts)), evidence_resolution.occurrence_key(digest, position), scope)
-                if known.get(key) is None:
+                leaf = None
+                if trial_archive:
+                    parent, leaf_profile, family, active, *facts = facts
+                    if active:
+                        leaf = evidence_resolution.trial_leaf_occurrence_key(
+                            leaf_profile if parent == table_import.TRIAL_MEMBER_ARCHIVE_PROFILE else parent, family)
+                    if leaf is None and parent in table_import.TRIAL_TABLE_PROFILES:
+                        continue
+                key = identity(dict(zip(fields, facts)), leaf or evidence_resolution.occurrence_key(digest, position), scope)
+                earlier = known.get(key)
+                if earlier is None:
                     known.add(key, fid)
+                elif leaf and earlier != fid:
+                    if ambiguous is None:
+                        ambiguous = rows.store.mapping()
+                    ambiguous.add(key)
         con.execute("insert into import_sources(source_id,case_id,filename,sha256,size_bytes,mode,mapping_json,sheet,parser_version,row_kind,origin,imported_at) values (?,?,?,?,?,?,?,?,?,?,'upload',current_timestamp at time zone 'UTC')",
                     [source["source_id"], case_id, filename, source["sha256"], source["size_bytes"], mode,
                      json.dumps(source["mapping"], ensure_ascii=False, sort_keys=True), source["sheet"], source["parser_version"], source["row_kind"]])
@@ -1241,7 +1344,10 @@ def _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, s
                 write_chunk()
                 encoded_bytes = 0
             key = identity(row, row["_occurrence_key"], row.get("_occurrence_scope"), incoming=True)
-            old = known.get(key)
+            if ambiguous is not None and key in ambiguous:
+                from .services.cases import ServiceError
+                raise ServiceError(409, "trial_occurrence_ambiguous", "同一原件的等值记录已有多条流水，无法确定唯一来源链接")
+            old = trial_occurrence_links.get(row["_source_row"]) or known.get(key)
             if old is not None:
                 duplicate += 1
                 references.append((row["_source_row"], old, False, "duplicate"))

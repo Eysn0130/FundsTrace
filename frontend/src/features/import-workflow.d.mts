@@ -8,10 +8,12 @@ export interface ImportItem {
   preview: ImportPreview | null; job: ImportJob | null; resume: ImportSession | null;
   mode: 'A' | 'B'; mapping: Record<string, string>; marked: string[]; selfAccounts: string[]; selfAccountsText: string;
   referencePolicy: boolean; dirty: boolean; error: string;
+  referenceReview?: { message: string; positions?: [number, number] };
   materialGroupId?: string;
   sizeBytes?: number; processingMs?: number; loadingMembers?: boolean; queryingOnly?: boolean;
 }
 export interface ImportState { items: ImportItem[]; selectedId: string | null; reading: boolean; running: boolean; stopped: boolean; error: string; withdrawing: boolean; dataVersion: number }
+export function hasFixedPdfLayout(preview: ImportPreview | null | undefined): boolean;
 export interface ImportWorkflow {
   snapshot(): ImportState; subscribe(listener: () => void): () => void; start(): Promise<void>;
   upload(read: (signal: AbortSignal) => File[] | Promise<File[]>, directory?: boolean): Promise<void>;
@@ -19,6 +21,8 @@ export interface ImportWorkflow {
   remove(id: string): boolean;
   withdraw(id: string, batchId: string): Promise<boolean>;
   select(id: string): void; stop(message?: string): void; dispose(): void;
+  acceptAssisted(id: string, revision: string, value: ImportPreview): void;
+  reviewReference(id: string): Promise<void>;
   edit(id: string, change: Partial<Pick<ImportItem, 'mode' | 'mapping' | 'marked' | 'selfAccounts' | 'selfAccountsText' | 'referencePolicy'>>): void;
   commit(id: string): Promise<void>; query(id: string): Promise<void>; repreview(id: string): Promise<void>; settled(importId: string): void;
 }

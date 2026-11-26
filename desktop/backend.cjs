@@ -72,7 +72,10 @@ function startBackend(config, { spawnProcess = spawn, health = verifyHealth, rea
         resolve({ origin: `http://127.0.0.1:${value.port}`, token });
       }, () => fail('FundsTrace backend identity check failed'));
     });
-    child.stdin.write(`${JSON.stringify({ protocol: 1, token, dataDir: config.dataDir, synthetic: config.synthetic })}\n`);
+    const bootstrap = { protocol: 1, token, dataDir: config.dataDir, synthetic: config.synthetic };
+    if (Object.hasOwn(config, 'modelTrial')) bootstrap.modelTrial = config.modelTrial;
+    if (Object.hasOwn(config, 'referenceReviewScopeFile')) bootstrap.referenceReviewScopeFile = config.referenceReviewScopeFile;
+    child.stdin.write(`${JSON.stringify(bootstrap)}\n`);
   });
   return { ready, stop };
 }

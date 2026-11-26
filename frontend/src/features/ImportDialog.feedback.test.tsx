@@ -62,7 +62,7 @@ describe('bank feedback ZIP import dialog', () => {
     expect(screen.getByText(/字段映射与流水模式不可修改/)).toBeTruthy();
     expect(screen.getByText('9,007,199,254,740,993.07 CNY')).toBeTruthy();
     expect(screen.getByText('0.03 USD')).toBeTruthy();
-    expect(screen.getByText('收付方向无法识别：1 条')).toBeTruthy();
+    expect(screen.getByText('正式导入未识别收付标志：1 条')).toBeTruthy();
     expect(screen.queryByText('invalid_direction')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '返回数据预览' }));
     const rawPreview = screen.getByRole('region', { name: '数据预览，可上下左右滚动' });

@@ -792,6 +792,7 @@ assert.equal(graph.edges[1].model.data.source_ledger.records[0].signed_amount,'-
 
 for (const [data, expectedLabel] of [
   [{cnt:2,total:'74.82',amount_totals:[{currency:'CNY',amount:'74.82'}],funds:{status:'bounded',confirmed_event_count:0,unresolved_observation_count:2,observation_count:2}},'2笔·¥74.82'],
+  [{cnt:2,total:'74.82',amount_totals:[{currency:'CNY',amount:'74.82'}],funds:{status:'bounded',observation_count:2},source_observation_notice:{observation_count:2}},'2笔（同笔待核）·原额合计¥74.82'],
   [{cnt:2,total:'107.00',amount_totals:[{currency:'CNY',amount:'107.00'}],funds:{status:'bounded',confirmed_event_count:1,unresolved_observation_count:1,observation_count:3}},'2笔·¥107.00'],
 ]) {
   labelContext.state.edgeLabels = new Set(['money']);

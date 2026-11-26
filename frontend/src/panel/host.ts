@@ -1,4 +1,6 @@
-import type { CaseStats, CleanupResult, CommitRequest, FlowPage, FlowSourceList, ImportJob, ImportPreview, ImportSourceMetadata, ImportRecordPage, ImportReviewPage, ImportReport, ImportReportIntegrity, ImportReportRecords, ImportReportAccountOptions, ImportSessionList, RepreviewRequest, WithdrawnImport } from '../../../contracts/api-v1';
+import type { CaseStats, CleanupResult, CommitRequest, FlowPage, FlowSourceList, ImportJob, ImportPreview, ImportSourceMetadata, ImportRecordPage, ImportReviewPage, ImportReport, ImportReportIntegrity, ImportReportRecords, ImportReportAccountOptions, ImportSessionList, RepreviewRequest, WithdrawnImport, ImportAssistanceRequest, ImportBalanceRoleTrialRequest, ImportPostingRoleTrialRequest, ModelTrialResult } from '../../../contracts/api-v1';
+import type { ImportReferenceTrialRequest, ImportRowCompareRequest, ImportRowComparison, ImportSignedAmountReview } from '../../../contracts/api-v1';
+import type { ImportColumnEvidence, ImportColumnEvidenceRequest, IntakeReceipt, ModelTrialStatus } from '../../../contracts/api-v1';
 
 export const FUNDS_PANEL_VERSION = 'funds-panel.v1' as const;
 
@@ -12,6 +14,8 @@ export type FundsReportAccountQueryV1 = Readonly<{ memberPath: string; expectedR
 export type FundsReportDownloadV1 = FundsReportQueryV1 & Readonly<{ sourceId: string; filename: string; expectedRevision: string }>;
 
 /** Case-bound use cases. File is a browser pilot input, not an IPC contract. */
+export type ImportModelTrialRequest = ImportAssistanceRequest | ImportPostingRoleTrialRequest | ImportBalanceRoleTrialRequest;
+
 export interface FundsCaseClientV1 {
   readonly binding: FundsScopeBindingV1;
   stats(signal?: AbortSignal): Promise<CaseStats>;
@@ -19,13 +23,22 @@ export interface FundsCaseClientV1 {
   preview(file: File, signal?: AbortSignal): Promise<ImportPreview>;
   previewDirectory?(files: File[], signal?: AbortSignal): Promise<ImportPreview>;
   repreview(importId: string, body: RepreviewRequest, signal?: AbortSignal): Promise<ImportPreview>;
+  importModelTrial?(importId: string, body: ImportModelTrialRequest, signal?: AbortSignal): Promise<ModelTrialResult>;
+  importReferenceTrial?(importId: string, body: ImportReferenceTrialRequest, signal?: AbortSignal): Promise<ModelTrialResult>;
+  importColumnEvidence?(importId: string, body: ImportColumnEvidenceRequest, signal?: AbortSignal): Promise<ImportColumnEvidence>;
+  intakeStatus?(signal?: AbortSignal): Promise<ModelTrialStatus>;
+  importIntake?(sourceId: string, signal?: AbortSignal): Promise<IntakeReceipt>;
+  importIntakePage?(sourceId: string, member: string, page: number, signal?: AbortSignal): Promise<string>;
+  downloadIntakeMember?(sourceId: string, member: string, filename: string, signal?: AbortSignal): Promise<void>;
   commit(importId: string, body: CommitRequest, signal?: AbortSignal): Promise<{ case_id: string; import_id: string; started: boolean }>;
   job(importId: string, signal?: AbortSignal): Promise<ImportJob>;
   importSourceMetadata?(sourceId: string, signal?: AbortSignal): Promise<ImportSourceMetadata>;
   withdrawImportSource?(sourceId: string, batchId: string, signal?: AbortSignal): Promise<WithdrawnImport>;
   imports(signal?: AbortSignal, importId?: string): Promise<ImportSessionList>;
-  importRecords?(sourceId: string, page?: number, signal?: AbortSignal, memberPath?: string, sourceRow?: number): Promise<ImportRecordPage>;
+  importRecords?(sourceId: string, page?: number, signal?: AbortSignal, memberPath?: string, sourceRow?: number, pdfPage?: number): Promise<ImportRecordPage>;
   importReview?(sourceId: string, memberPath: string, query: {view: ImportReviewPage['view']; page: number; issueIndex?: number}, signal?: AbortSignal): Promise<ImportReviewPage>;
+  compareImportRows?(sourceId: string, body: ImportRowCompareRequest, signal?: AbortSignal): Promise<ImportRowComparison>;
+  importSignedAmounts?(sourceId: string, memberPath: string, signal?: AbortSignal): Promise<ImportSignedAmountReview | null>;
   importFundsReport?(sourceId: string, query: FundsReportQueryV1, signal?: AbortSignal): Promise<ImportReport>;
   verifyImportSource?(sourceId: string, query: Readonly<{ memberPath: string; expectedRevision: string }>, signal?: AbortSignal): Promise<ImportReportIntegrity>;
   importReportRecords?(sourceId: string, query: FundsReportRecordsQueryV1, signal?: AbortSignal): Promise<ImportReportRecords>;

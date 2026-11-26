@@ -377,6 +377,20 @@
       </div>
       </div>
       </div></div>
+      <details id="trialLedgerLookup" hidden>
+        <summary>按卡号或户名查账簿</summary>
+        <search>
+          <form id="trialLedgerForm" method="post" autocomplete="off">
+            <label for="trialLedgerKind">查找方式</label><select id="trialLedgerKind" name="kind"><option value="card">卡号</option><option value="name">户名</option></select>
+            <label for="trialLedgerValue">完整卡号或户名</label><input id="trialLedgerValue" name="value" maxlength="128" required spellcheck="false">
+            <label for="trialLedgerStart">来源起日</label><input id="trialLedgerStart" name="start" type="date" required>
+            <label for="trialLedgerEnd">来源止日</label><input id="trialLedgerEnd" name="end" type="date" required>
+            <button type="submit" class="btn small">核对账簿</button>
+          </form>
+        </search>
+        <p id="trialLedgerStatus" role="status"></p>
+        <div id="trialLedgerResults"></div>
+      </details>
       <div id="bulkTrackBar">
         <div class="bulk-selection"><label class="el-ck" title="只勾选当前已显示的流水，不包含尚未载入的结果；滚出显示范围的已选锚点保留"><input type="checkbox" id="flowCkAll">当前显示锚点</label><span class="muted" id="flowCkCount">已选锚点 0 条记录</span></div>
         <div class="bulk-options">
@@ -412,7 +426,10 @@
   </aside>
 
   <section id="canvasWrap">
-    <div id="graphLayoutStatus" role="status" aria-live="polite" hidden></div>
+    <div class="graph-status-stack">
+      <div id="graphLayoutStatus" role="status" aria-live="polite" hidden></div>
+      <div id="graphLedgerSummary" role="status"></div>
+    </div>
     <div id="graphContainer" tabindex="0" role="region" aria-label="关系图谱" aria-describedby="graphSelectionHelp" aria-keyshortcuts="Control+a Meta+a Delete Backspace Control+z Meta+z"></div>
     <span id="graphSelectionHelp" class="sr-only">单击选中节点或连线；Enter 查看详情；Ctrl 或 Command 点击多选，加 A 全选当前图谱；Delete 或 macOS 删除键从当前画布移出选中节点或连线，原始流水保留；Ctrl 或 Command 加 Z 撤销，加 Shift 和 Z 重做；拖动移动选中节点；双击节点查看已上图邻域，双击连线折点删除折点；Escape 取消选择。</span>
     <div id="legend">
@@ -658,7 +675,7 @@
               <th scope="col" data-field="account" class="context-account-column">账号</th>
               <th scope="col" data-field="name">户名</th>
               <th scope="col" data-field="time">交易时间</th>
-              <th scope="col" data-field="direction">借贷标识</th>
+              <th scope="col" data-field="direction">收付方向</th>
               <th scope="col" data-field="amount" class="amt">交易金额</th>
               <th scope="col" data-field="balance" class="amt">该记录余额</th>
               <th scope="col" data-field="counter-card">对手卡号<span class="context-overview-only context-column-sublabel">对手账号</span></th>
@@ -673,7 +690,7 @@
         </div>
         <div class="flow-horizontal-scroll context-horizontal-scroll" role="group" aria-label="前后流水表格水平滚动"><button class="btn small" id="ctxScrollLeft" type="button" aria-label="前后流水向左滚动"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button><input id="ctxHorizontalPosition" type="range" min="0" max="0" value="0" step="1" disabled aria-label="前后流水水平位置" aria-controls="ctxTableScroll"><button class="btn small" id="ctxScrollRight" type="button" aria-label="前后流水向右滚动"><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt=""></button></div>
       </section>
-      <aside class="context-matches" aria-label="匹配线索"><div id="ctxSuggest"></div></aside>
+      <aside class="context-matches" aria-label="来源与去向"><div id="ctxSuggest"></div></aside>
     </div>
     <section class="context-detail" id="ctxDetail" hidden aria-labelledby="ctxDetailTitle">
       <header><button class="btn small" id="ctxDetailBack" type="button">返回流水</button><h3 id="ctxDetailTitle">原始记录</h3><button class="btn small" id="ctxTraceThis" type="button">以此笔追踪</button></header>

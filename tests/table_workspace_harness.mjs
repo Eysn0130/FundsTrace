@@ -440,6 +440,7 @@ function lifecycleHarness({ canvas = 0 } = {}) {
     },
   };
   vm.runInContext(section('async function openManagedCase(', 'function installCaseWorkspace('), f.context);
+  vm.runInContext(section('let modelTrialCapability;', 'function renderContextModelTrial('), f.context);
   return { ...f, lifecycleCalls: calls, async start() {
     let start;
     const listen = f.context.window.addEventListener;

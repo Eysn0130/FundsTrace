@@ -1,6 +1,6 @@
 import {act,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {expect,it,vi} from 'vitest';
-import type {ImportReviewPage,ImportReviewRecord} from '../../../contracts/api-v1';
+import type {ImportReviewPage,ImportReviewRecord,ImportRowComparison} from '../../../contracts/api-v1';
 import type {FundsCaseClientV1} from '../panel/host';
 import {ImportReview} from './ImportReview';
 
@@ -20,6 +20,144 @@ function client():FundsCaseClientV1 {
   return {binding:{caseId:'1',scopeKey:'review',generation:1},stats:vi.fn(),flows:vi.fn(),preview:vi.fn(),repreview:vi.fn(),commit:vi.fn(),job:vi.fn(),imports:vi.fn(),sources:vi.fn(),cleanup:vi.fn(),
     importReview:vi.fn(async(_source,_member,query)=>page(query.view,query.issueIndex||1))};
 }
+
+it('reports matching original observations while funds remain pending', async () => {
+  const own = client();
+  own.compareImportRows = vi.fn(async (): Promise<ImportRowComparison> => ({
+    case_id: '1',
+    source_id: 'SYN-SOURCE',
+    member_path: 'table.csv',
+    scope: 'selected_source_rows',
+    status: 'pending',
+    reason: 'different_ledger',
+    rows: [
+      { record_no: good.record_no, source_row: good.source_row, own_account_column: 2, direction_column: 6, direction: 'out' },
+      { record_no: first.record_no, source_row: first.source_row, own_account_column: 2, direction_column: 6, direction: 'in' },
+    ],
+    event_attribution: 'unknown',
+    observation_correspondence: {
+      own_card_column: 1, counterparty_identifier_column: 7, reference_column: 21,
+      status_column: 16, time_column: 3, amount_column: 4, currency_column: 13,
+    },
+  }));
+  render(<ImportReview client={own} scopeSignal={new AbortController().signal} sourceId="SYN-SOURCE"
+    memberPath="table.csv" allowCompare />);
+  fireEvent.click(await screen.findByRole('checkbox', { name: '选择原始第 2 行核对双侧' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: '选择原始第 7 行核对双侧' }));
+  fireEvent.click(screen.getByRole('button', { name: '核对所选两行是否互为双侧' }));
+
+  const status = screen.getByRole('status', { name: '双侧核对结果' });
+  await waitFor(() => expect(status.textContent).toContain('可回查两条原行及各自余额，交易是否成功仍待核'));
+  expect(status.textContent).toContain('原始第 2 行');
+  expect(status.textContent).toContain('原始第 7 行');
+  expect(screen.getByText(/对手账卡号第 7 列/).textContent).toContain('交易状态见第 16 列');
+  expect(own.commit).not.toHaveBeenCalled();
+
+  fireEvent.click(screen.getByRole('button', { name: '清空选择' }));
+  expect(status.textContent).toBe('');
+});
+
+it('shows account reciprocity and missing linkage as a pending source result', async () => {
+  const own = client();
+  own.compareImportRows = vi.fn(async (): Promise<ImportRowComparison> => ({
+    case_id: '1', source_id: 'SYN-SOURCE', member_path: 'table.csv',
+    scope: 'selected_source_rows', status: 'pending', reason: 'source_account_text_pending',
+    event_attribution: 'unknown',
+    rows: [
+      {record_no: good.record_no, source_row: 2, own_account_column: 2, direction_column: 9, direction: 'out'},
+      {record_no: first.record_no, source_row: 7, own_account_column: 2, direction_column: 9, direction: 'in'},
+    ],
+    account_pair_lead: {
+      kind: 'reciprocal_accounts', own_account_column: 2, counterparty_identifier_column: 10, balance_column: 8,
+      empty_reference_columns: [20, 24, 25, 27],
+      observations: [
+        {source_row: 2, direction: 'out', balance_witness_rows: [3, 4], whole_member_candidate_count: 1},
+        {source_row: 7, direction: 'in', balance_witness_rows: [6, 8], whole_member_candidate_count: 1},
+      ],
+      registration_context: {
+        source_role_only: true, complete: true, different_name: true, different_document: true,
+        matches: [2, 7].map((source_row, offset) => ({
+          posting_source_row: source_row, source_id: 'SYN-REGISTRY', member_path: 'table.csv', source_row: offset + 4,
+          account_column: 4, card_column: 3, name_column: 1, document_column: 2, currency_column: 8,
+          opening_column: 5, closing_column: 13, last_transaction_column: 18, branch_column: 16,
+          balance_column: 6, available_column: 7, card_matches: offset === 0 ? true : null,
+          card_equals_account: offset === 1, posting_card_present: offset === 0, name_present: true, document_present: true,
+        })),
+      },
+    },
+  }));
+  render(<ImportReview client={own} scopeSignal={new AbortController().signal} sourceId="SYN-SOURCE"
+    memberPath="table.csv" allowCompare />);
+  fireEvent.click(await screen.findByRole('checkbox', {name: '选择原始第 2 行核对双侧'}));
+  fireEvent.click(screen.getByRole('checkbox', {name: '选择原始第 7 行核对双侧'}));
+  fireEvent.click(screen.getByRole('button', {name: '核对所选两行是否互为双侧'}));
+  const notice = screen.getByRole('status', {name: '双侧核对结果'});
+  await waitFor(() => expect(notice.textContent).toContain('按本方账号互指。同笔对应待核'));
+  const detail = screen.getByText(/尚缺能关联两条原行的对应凭据/);
+  expect(detail.textContent).toContain('相邻第 6、8 行');
+  expect(detail.textContent).toContain('第 20、24、25、27 列的编号为空');
+  const registry = screen.getByText(/实际受益人仍待核/);
+  expect(registry.textContent).toContain('开户资料第 5 行');
+  expect(registry.textContent).toContain('本方卡号原格为空');
+  expect(registry.textContent).toContain('开户登记的姓名和证件号均不同');
+  expect(screen.queryByText(/对应同一笔账面往来/)).toBeNull();
+  expect(own.commit).not.toHaveBeenCalled();
+});
+
+it.each([
+  {
+    outcome: {
+      status: 'pending', reason: 'different_ledger',
+      observation_correspondence: {
+        own_card_column: 1, counterparty_identifier_column: 10, reference_column: 25,
+        source_reference_kind: 'ledger_log', status_column: 19, time_column: 6, amount_column: 7, currency_column: 16,
+      },
+    },
+    statusText: '两条原行对应同一笔账面往来',
+    evidence: '日志号第 25 列相互核对',
+  },
+  {
+    outcome: {
+      status: 'excluded', reason: 'other_ledger_correspondence',
+      alternative_correspondences: [[2, 5], [7, 8]],
+    },
+    statusText: '排除这组账面配对',
+    evidence: '原始第 2、5 行和原始第 7、8 行',
+  },
+] satisfies {outcome: Partial<ImportRowComparison>; statusText: string; evidence: string}[])(
+  'reports $statusText without asserting settlement', async ({outcome, statusText, evidence}) => {
+    const own = client();
+    own.compareImportRows = vi.fn(async (): Promise<ImportRowComparison> => ({
+      case_id: '1', source_id: 'SYN-SOURCE', member_path: 'table.csv', scope: 'selected_source_rows',
+      event_attribution: 'unknown',
+      rows: [
+        {record_no: good.record_no, source_row: good.source_row, own_account_column: 2, direction_column: 9, direction: 'out'},
+        {record_no: first.record_no, source_row: first.source_row, own_account_column: 2, direction_column: 9, direction: 'in'},
+      ],
+      posting_comparison: {
+        opposite_directions: true, reciprocal_card_text: true, same_recorded_clock: !!outcome.observation_correspondence,
+        same_amount: true, same_currency: true, same_reference: false, reference_text_matches: true,
+        reference_occurrences: [11, 11],
+        columns: {direction: 9, own_card: 1, peer: 10, amount: 7, currency: 16, clock: 6, reference: 24},
+      },
+      ...outcome,
+    }));
+    render(<ImportReview client={own} scopeSignal={new AbortController().signal} sourceId="SYN-SOURCE"
+      memberPath="table.csv" allowCompare />);
+    fireEvent.click(await screen.findByRole('checkbox', {name: '选择原始第 2 行核对双侧'}));
+    fireEvent.click(screen.getByRole('checkbox', {name: '选择原始第 7 行核对双侧'}));
+    fireEvent.click(screen.getByRole('button', {name: '核对所选两行是否互为双侧'}));
+    const status = screen.getByRole('status', {name: '双侧核对结果'});
+    await waitFor(() => expect(status.textContent).toContain(statusText));
+    expect(status.textContent).toContain('交易结算待核');
+    expect(screen.getByText((_text, element) => element?.tagName === 'P' &&
+      Boolean(element.textContent?.includes(evidence)))).toBeTruthy();
+    expect(screen.getByText(/原交易流水号字面相同/).textContent).toContain('此原号无法区分这些记录');
+    expect(screen.queryByText(/还需能指回双方原行/)).toBeNull();
+    expect(screen.queryByText(/交易流水号第 25 列/)).toBeNull();
+    expect(own.commit).not.toHaveBeenCalled();
+  },
+);
 
 it('uses full-file server counts, changes scope and navigates to original rows across pages without writes',async()=>{
   const own=client();render(<ImportReview client={own} scopeSignal={new AbortController().signal} sourceId="SYN-SOURCE" memberPath="table.csv"/>);
@@ -48,6 +186,22 @@ it('opens the exact raw reason from the row icon and Escape only dismisses that 
   expect(popup.textContent).toContain('交易时间无效');expect(popup.textContent).toContain('交易时间： 原始坏日期 ');
   fireEvent.keyDown(popup,{key:'Escape'});expect(screen.queryByRole('dialog',{name:'完整内容'})).toBeNull();
   expect(document.activeElement).toBe(trigger);expect(screen.getByRole('group',{name:'来源记录筛选'})).toBeTruthy();
+});
+
+it('shows the cited source cells for a conflicting withdrawal direction', async () => {
+  const own = client();
+  const reason = '原第 2 行第 7 列的方向说明与本行第 4 列取款的默认方向相反。请核对该表区的方向释义。';
+  const held: ImportReviewRecord = {
+    ...row(4, 'conflicting_direction', '取款'), details: { reason },
+    original: [{ column: 4, header: '交易方向', value: '取款', fields: ['direction'] }],
+  };
+  own.importReview = vi.fn(async (_s, _m, query) => ({ ...page(query.view), items: [held],
+    issue: { index: 1, record_no: held.record_no, source_row: held.source_row, reason_code: held.reason_code } }));
+  render(<ImportReview client={own} scopeSignal={new AbortController().signal} sourceId="SYN-SOURCE" memberPath="table.csv" />);
+  fireEvent.click(await screen.findByRole('button', { name: '原始第 4 行：收付方向依据相互矛盾' }));
+  const popup = screen.getByRole('dialog', { name: '完整内容' });
+  expect(popup.textContent).toContain(reason);
+  expect(popup.textContent).toContain('交易方向：取款');
 });
 
 it('clears stale rows on a new member and discards late replies and revocation',async()=>{

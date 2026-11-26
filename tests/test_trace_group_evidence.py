@@ -23,6 +23,155 @@ def evaluate_book(cid, ids):
     return trace_group_evidence.evidence(account, incoming, outgoing, trace_group_evidence.prepare(cid, account, rows))
 
 
+@pytest.mark.parametrize("scenario", ["proved", "reversed", "other_source", "wrong_header", "changed_original"])
+def test_v69_uniform35_reviews_the_observed_own_side_without_inventing_a_peer(client, make_case, monkeypatch, scenario):
+    from app.services import imports
+    from test_uniform35_reference import COLUMNS, row, workbook
+
+    monkeypatch.setattr(client.app.state, "desktop_model_trial", (None,), raising=False)
+    case = make_case("Synthetic uniform35 posting directions")
+    base = f"/api/v1/cases/{case}"
+    contents = []
+    for reference, stamp, direction in (("DEBIT", "20460101080100", "出"), ("CREDIT", "20460101080500", "进")):
+        contents.append(row(**{"本方账号": "SYN-OWN", "本方卡号": "", "查询账号": "SYN-OTHER-QUERY",
+                               "交易对方账号": "", "交易对方卡号": "", "交易对方名称": "",
+                               "交易时间": stamp, "借贷标志": direction, "交易流水号": reference,
+                               "凭证号": reference, "交易是否成功": "成功"}))
+    headers = tuple("其他日记" if col == "日志号" else col for col in COLUMNS) if scenario == "wrong_header" else COLUMNS
+    sources = [[record] for record in contents] if scenario == "other_source" else [contents]
+    jobs = []
+    for source in sources:
+        raw = workbook(source, headers=headers, stale=True, padding=("", ""))
+        view = preview(client, case, raw, "source.xlsx")
+        assert view["table_summary"]["profile"] == "funds-trace-table-v69"
+        job = complete(client, case, view)
+        assert job["stage"] == "done" and job["result"]["ok"] == len(source), job
+        jobs.append((view["import_id"], job["result"]["batch_id"], raw))
+    flows = {row["trade_no"]: row for row in client.get(base + "/flows?granularity=observations").json()["items"]}
+    assert flows["CREDIT"]["raw_payer_account"] == flows["DEBIT"]["raw_payee_account"] == ""
+    credit, debit = (flows[name]["id"] for name in ("CREDIT", "DEBIT"))
+    if scenario == "reversed":
+        credit, debit = debit, credit
+    token = review(client, case, credit, x=20)["review"]["token"]
+    current = {"kind": "trace_target", "anchor_id": credit, "canvas_id": "0", "review_token": token,
+               "source_flow_ids": [credit], "target_flow_ids": [debit]}
+    if scenario == "changed_original":
+        source_id, _, raw = jobs[0]
+        imports._path(source_id, ".xlsx").write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+    response = client.post(base + "/review-model-trial", json=current)
+    if scenario != "proved":
+        assert (response.status_code, response.json()["error"]["code"]) == (422, "assistance_wrong_ledger_direction"), response.text
+        return
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    facts = result["packet"]["facts"]
+    assert facts["checks"]["ledger_roles"] and "selected_debits_precede_all_credits" in facts["reasons"]
+    assert facts["conditional_group_share"] is None and result["receipt"]["status"] == "pending"
+    assert result["first_calls"] == result["recheck_calls"] == 0
+    reverse = review(client, case, debit, x=20)["review"]["token"]
+    other = client.post(base + "/review-model-trial", json={
+        **current, "kind": "trace_source", "anchor_id": debit, "review_token": reverse,
+    })
+    assert other.status_code == 200 and other.json()["packet"]["facts"]["reasons"] == facts["reasons"]
+    source_id, batch, raw = jobs[0]
+    assert client.get(base + f"/sources/{source_id}/file").content == raw
+    assert client.delete(base + f"/sources/{source_id}/operation", params={"expected_batch_id": batch}).status_code == 200
+    assert client.post(base + "/review-model-trial", json=current).status_code == 409
+
+
+def test_unallocated_later_target_original_explains_the_principal_boundary(
+        client, make_case, monkeypatch):
+    from app.services import imports
+    from test_event_graph import graph, track
+    from test_event_import import csv_rows
+
+    monkeypatch.setattr(client.app.state, "desktop_model_trial", (None,), raising=False)
+    cid = make_case("Synthetic limited target principal review")
+    canvas = client.post("/api/canvases/save", json={
+        "case_id": cid, "name": "Synthetic principal canvas", "snapshot": {},
+    }).raise_for_status().json()["canvas_id"]
+    rows = [
+        book_row("B", "SYN-INITIAL-PAYER", "B", "40.00", "40.00", 0, 1, "ANCHOR"),
+        book_row("B", "B", "SYN-FUNDED", "40.00", "0.00", 1, 2, "FUNDED"),
+        book_row("B", "SYN-NEXT-PAYER", "B", "1000.00", "1000.00", 2, 3, "OTHER-CREDIT"),
+    ]
+    for index in range(21):
+        balance = f"{1000 - 10 * (index + 1)}.00" if index < 11 else ""
+        rows.append(book_row("B", "B", f"SYN-RECIPIENT-{index}", "10.00",
+                             balance, index + 3, index + 4, f"TARGET-{index}"))
+    raw = csv_rows(rows)
+    view = preview(client, cid, raw)
+    job = complete(client, cid, view)
+    assert job["stage"] == "done" and job["result"]["ok"] == len(rows)
+    base = f"/api/v1/cases/{cid}"
+    flows = client.get(base + "/flows?granularity=observations").raise_for_status().json()["items"]
+    positions = {row["trade_no"]: row for row in flows}
+    anchor, funded, other, zero, hidden, pending = (
+        positions[f"SYN-B-{key}"] for key in ("ANCHOR", "FUNDED", "OTHER-CREDIT", "TARGET-0", "TARGET-10", "TARGET-11")
+    )
+
+    opened = review(client, cid, anchor["id"], canvas=canvas, x=50)
+    token = opened["review"]["token"]
+    limited = opened["review"]["principal"]["target"]
+    assert limited["status"] == "limited" and not limited["targets"]
+    assert limited["assessment"][0]["kind"] == "resource_limit"
+    roles = {row["id"]: row["review_roles"] for row in opened["rows"]}
+    assert roles[pending["id"]] == roles[zero["id"]] == roles[hidden["id"]] == ["target"]
+    assert roles[other["id"]] == []
+    clues = {item["ids"][0]: item["evidence"]["conditional_group_share"] for item in opened["suggestions"]["targets"]}
+    assert clues[funded["id"]] == {"min": "40.00", "max": "40.00"}
+    assert clues[zero["id"]] == {"min": "0.00", "max": "0.00"}
+    assert hidden["id"] not in clues
+    assert evaluate_book(cid, [int(anchor["id"]), int(hidden["id"])])["conditional_group_share"] == {
+        "min": "0.00", "max": "0.00"}
+
+    message = "该原行可以回查已记录的往来。先后顺序不足以确定本金归属，本次未核定资金份额。"
+
+    def original(row, review_token=token, *, anchor_id=anchor["id"], canvas_id=canvas):
+        return client.get(f"/api/context/{anchor_id}/record/{row['id']}",
+                          params={"case_id": cid, "canvas_id": canvas_id},
+                          headers={"X-FundsTrace-Review": review_token})
+
+    card = original(pending).raise_for_status().json()
+    assert card["message"] == message
+    [witness] = card["originals"]
+    assert witness["source_row"] == 16
+    assert witness["cells"][0]["value"] == "SYN-B-TARGET-11"
+    for excluded in (anchor, funded, other, zero, hidden):
+        assert message not in original(excluded).raise_for_status().json()["message"]
+    assert original(pending, canvas_id=0).status_code == 409
+    assert original(pending, anchor_id=other["id"]).status_code == 409
+
+    # The default view and the unanchored edge do not issue this finding.
+    with monkeypatch.context() as normal:
+        normal.setattr(client.app.state, "desktop_model_trial", None)
+        default_token = review(client, cid, anchor["id"], canvas=canvas, x=50)["review"]["token"]
+        assert message not in original(pending).raise_for_status().json()["message"]
+    assert message not in original(pending, default_token).raise_for_status().json()["message"]
+    track(client, cid, [anchor])
+    current = graph(client, cid)
+    [edge] = current["edges"]
+    edge_view = client.post("/api/context/edge", json={
+        "case_id": cid, "source": edge["source"], "target": edge["target"], "forward_ids": edge["ids"],
+        "analysis_revision": current["analysis_revision"], "membership_digest": current["membership_digest"],
+    }).raise_for_status().json()
+    assert message not in original(pending, edge_view["review"]["token"], anchor_id=0,
+                                   canvas_id=0).raise_for_status().json()["message"]
+
+    # Source bytes and the active revision are still required after issuing the review.
+    source_id = view["import_id"]
+    original_path = imports._path(source_id, ".csv")
+    original_path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+    unavailable = original(pending).raise_for_status().json()
+    assert message not in unavailable["message"] and unavailable["originals"][0]["cells"] == []
+    original_path.write_bytes(raw)
+    assert client.delete(base + f"/sources/{source_id}/operation",
+                         params={"expected_batch_id": job["result"]["batch_id"]}).status_code == 200
+    assert original(pending).status_code == 409
+    assert client.get(base + "/flows").raise_for_status().json()["total"] == 0
+
+
 @pytest.mark.parametrize("credits,debits,pattern", [
     ([100], [90], "整进整出"),
     ([100], [40, 50], "整进散出"),

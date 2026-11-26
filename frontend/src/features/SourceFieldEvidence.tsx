@@ -16,6 +16,25 @@ type SinglePostingProof = {
 };
 
 export function SourceFieldEvidence({ details, expanded = false }: { details?: Record<string, string>; expanded?: boolean }) {
+  if (details?.source_role === 'pdf_observation') {
+    let original: string[] = [], boxes: number[][] = [];
+    try {
+      const values: unknown = JSON.parse(details.pdf_text_original || 'null');
+      if (Array.isArray(values) && values.length === 5 && values.every(value => typeof value === 'string')) original = values;
+      const positions: unknown = JSON.parse(details.pdf_text_boxes || 'null');
+      if (Array.isArray(positions) && positions.length === 5 && positions.every(box =>
+        Array.isArray(box) && box.length === 4 && box.every(value => typeof value === 'number' && Number.isFinite(value)))) boxes = positions;
+    } catch { /* A preserved observation may only have an original excerpt. */ }
+    const labels = ['来源时间', '付款方', '收款方', '金额', '原页余额'];
+    return <details open={expanded}><summary>第 {details.pdf_page} 页 · {details.pdf_row === '0' ? '页面核对' : `第 ${details.pdf_row} 条来源观察`}</summary>
+      {original.length > 0 && <dl>{original.map((value, index) => <div key={labels[index]}><dt>{labels[index]}</dt>
+        <dd>{index === 3 && details.pdf_text_currency && <>{details.pdf_text_currency} </>}{value}
+          {boxes[index] && <> · 原页坐标 <code>{boxes[index].join(', ')}</code></>}</dd></div>)}</dl>}
+      {details.pdf_text_line && !original.length && <p><code>{details.pdf_text_line}</code></p>}
+      {details.pdf_text_copy_of_page && <p>对应第 {details.pdf_text_copy_of_page} 页第 {details.pdf_text_copy_of_row} 条原行。</p>}
+      <p>{details.reason || '账簿归属和余额口径待核。'}</p>
+    </details>;
+  }
   let times: { role: string; column: string; column_index: number; raw: string; wall_clock: string; offset: string | null; utc: string | null }[] = [];
   try {
     const value = JSON.parse(details?.source_time_evidence || 'null');

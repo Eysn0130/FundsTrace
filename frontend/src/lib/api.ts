@@ -1,5 +1,7 @@
-import type { Case, CaseList, CaseStats, FlowPage, ImportPreview, ImportJob, ImportSourceMetadata, ImportRecordPage, ImportReviewPage, ImportReport, ImportReportIntegrity, ImportReportRecords, ImportReportAccountOptions, CommitRequest, RepreviewRequest, ImportSessionList, FlowSourceList, CleanupResult, WithdrawnImport } from '../../../contracts/api-v1';
-import type { FundsReportDownloadV1, FundsReportQueryV1, FundsReportRecordsQueryV1, FundsReportAccountQueryV1 } from '../panel/host';
+import type { Case, CaseList, CaseStats, FlowPage, ImportPreview, ImportJob, ImportSourceMetadata, ImportRecordPage, ImportReviewPage, ImportReport, ImportReportIntegrity, ImportReportRecords, ImportReportAccountOptions, CommitRequest, RepreviewRequest, ImportSessionList, FlowSourceList, CleanupResult, WithdrawnImport, ModelTrialResult } from '../../../contracts/api-v1';
+import type { ImportReferenceTrialRequest, ImportRowCompareRequest, ImportRowComparison, ImportSignedAmountReview } from '../../../contracts/api-v1';
+import type { ImportModelTrialRequest, FundsReportDownloadV1, FundsReportQueryV1, FundsReportRecordsQueryV1, FundsReportAccountQueryV1 } from '../panel/host';
+import type { ImportColumnEvidence, ImportColumnEvidenceRequest, IntakeReceipt, ModelTrialStatus } from '../../../contracts/api-v1';
 
 export class ApiError extends Error {
   constructor(public code: string, message: string, public status?: number, public failureKind?: string) { super(message); }
@@ -37,6 +39,7 @@ const reportQuery = (query: FundsReportQueryV1, pageSize: number) => { const par
   return params;
 };
 const reportPath = (id: string, sourceId: string) => `${casePath(id)}/imports/${encodeURIComponent(sourceId)}/report`;
+const intakeSource = (id: string, sourceId: string) => `${casePath(id)}/sources/${encodeURIComponent(sourceId)}`;
 
 async function download(path: string, filename: string, signal?: AbortSignal): Promise<void> {
   const response = await fetch(`/api/v1${path}`, { signal });
@@ -70,6 +73,31 @@ export const api = {
   },
   repreview: (id: string, importId: string, body: RepreviewRequest, signal?: AbortSignal) =>
     request<ImportPreview>(`${casePath(id)}/imports/${encodeURIComponent(importId)}/preview`, { ...json(body), signal }),
+  importModelTrial: (id: string, importId: string, body: ImportModelTrialRequest, signal?: AbortSignal) =>
+    request<ModelTrialResult>(`${casePath(id)}/imports/${encodeURIComponent(importId)}/layout-review/model-trial`, { ...json(body), signal }),
+  importReferenceTrial: (id: string, importId: string, body: ImportReferenceTrialRequest, signal?: AbortSignal) =>
+    request<ModelTrialResult>(`${casePath(id)}/imports/${encodeURIComponent(importId)}/layout-review/reference-policy-trial`, { ...json(body), signal }),
+  importColumnEvidence: (id: string, importId: string, body: ImportColumnEvidenceRequest, signal?: AbortSignal) =>
+    request<ImportColumnEvidence>(`${casePath(id)}/imports/${encodeURIComponent(importId)}/layout-review/column-evidence`, { ...json(body), signal }),
+  intakeStatus: (signal?: AbortSignal) => request<ModelTrialStatus>('/model-trial/status', { signal }),
+  importIntake: (id: string, sourceId: string, signal?: AbortSignal) =>
+    request<IntakeReceipt>(`${casePath(id)}/imports/${encodeURIComponent(sourceId)}/intake`, { signal }),
+  downloadIntakeMember: (id: string, sourceId: string, member: string, filename: string, signal?: AbortSignal) =>
+    download(`${intakeSource(id, sourceId)}/member-file?${new URLSearchParams({member_path:member})}`, filename, signal),
+  importIntakePage: async (id: string, sourceId: string, member: string, page: number, signal?: AbortSignal) => {
+    const response = await fetch(`/api/v1${intakeSource(id, sourceId)}/pdf-page/${page}?${new URLSearchParams({member_path:member})}`, { signal });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      throw new ApiError(payload?.error?.code || 'page_unavailable', payload?.error?.message || '无法显示原件页。', response.status);
+    }
+    const data = await response.blob();
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('无法显示原件页。'));
+      reader.onload = () => resolve(String(reader.result));
+      reader.readAsDataURL(data);
+    });
+  },
   commit: (id: string, importId: string, body: CommitRequest, signal?: AbortSignal) =>
     request<{ case_id: string; import_id: string; started: boolean }>(`${casePath(id)}/imports/${encodeURIComponent(importId)}/commit`, { ...json(body), signal }),
   job: (id: string, importId: string, signal?: AbortSignal) =>
@@ -80,10 +108,17 @@ export const api = {
     request<WithdrawnImport>(`${casePath(id)}/sources/${encodeURIComponent(sourceId)}/operation?${new URLSearchParams({ expected_batch_id: batchId })}`, { method: 'DELETE', signal }),
   imports: (id: string, signal?: AbortSignal, importId?: string) =>
     request<ImportSessionList>(`${casePath(id)}/imports?${importId === undefined ? 'limit=100' : 'import_id=' + encodeURIComponent(importId)}`, { signal }),
-  importRecords: (id: string, sourceId: string, page = 1, signal?: AbortSignal, memberPath?: string, sourceRow?: number) =>
-    request<ImportRecordPage>(`${casePath(id)}/imports/${encodeURIComponent(sourceId)}/records?${new URLSearchParams({ page: String(page), page_size: '50', ...(memberPath !== undefined ? { member_path: memberPath, include_preview: 'true' } : {}), ...(sourceRow !== undefined ? { source_row: String(sourceRow) } : {}) })}`, { signal }),
+  importRecords: (id: string, sourceId: string, page = 1, signal?: AbortSignal, memberPath?: string, sourceRow?: number, pdfPage?: number) =>
+    request<ImportRecordPage>(`${casePath(id)}/imports/${encodeURIComponent(sourceId)}/records?${new URLSearchParams({
+      page: String(page), page_size: '50', ...(memberPath !== undefined ? { member_path: memberPath, include_preview: 'true' } : {}),
+      ...(sourceRow !== undefined ? { source_row: String(sourceRow) } : {}), ...(pdfPage !== undefined ? { pdf_page: String(pdfPage) } : {}),
+    })}`, { signal }),
   importReview: (id: string, sourceId: string, memberPath: string, query: {view: ImportReviewPage['view']; page: number; issueIndex?: number}, signal?: AbortSignal) =>
     request<ImportReviewPage>(`${casePath(id)}/imports/${encodeURIComponent(sourceId)}/review?${new URLSearchParams({member_path:memberPath,view:query.view,page:String(query.page),page_size:'50',...(query.issueIndex !== undefined ? {issue_index:String(query.issueIndex)} : {})})}`, {signal}),
+  compareImportRows: (id: string, sourceId: string, body: ImportRowCompareRequest, signal?: AbortSignal) =>
+    request<ImportRowComparison>(`${casePath(id)}/imports/${encodeURIComponent(sourceId)}/review/compare`, { ...json(body), signal }),
+  importSignedAmounts: (id: string, sourceId: string, memberPath: string, signal?: AbortSignal) =>
+    request<ImportSignedAmountReview | null>(`${casePath(id)}/imports/${encodeURIComponent(sourceId)}/review/signed-amounts?${new URLSearchParams({member_path:memberPath})}`, {signal}),
   importFundsReport: (id: string, sourceId: string, query: FundsReportQueryV1, signal?: AbortSignal) =>
     request<ImportReport>(`${reportPath(id, sourceId)}?${reportQuery(query, 20)}`, { signal }),
   importReportAccounts: (id: string, sourceId: string, query: FundsReportAccountQueryV1, signal?: AbortSignal) =>
@@ -110,5 +145,5 @@ export const api = {
   cleanup: (id: string, dryRun = true, signal?: AbortSignal) => request<CleanupResult>(`${casePath(id)}/imports/cleanup`, { ...json({ dry_run: dryRun }), signal }),
 };
 
-type OptionalUseCase = 'previewDirectory' | 'importSourceMetadata' | 'withdrawImportSource' | 'importRecords' | 'importReview' | 'importFundsReport' | 'verifyImportSource' | 'importReportRecords' | 'importReportAccounts' | 'downloadFundsReport';
+type OptionalUseCase = 'previewDirectory' | 'importSourceMetadata' | 'withdrawImportSource' | 'importRecords' | 'importReview' | 'compareImportRows' | 'importSignedAmounts' | 'importFundsReport' | 'verifyImportSource' | 'importReportRecords' | 'importReportAccounts' | 'downloadFundsReport' | 'importModelTrial' | 'importReferenceTrial' | 'importColumnEvidence' | 'intakeStatus' | 'importIntake' | 'importIntakePage' | 'downloadIntakeMember';
 export type FundsApi = Omit<typeof api, OptionalUseCase> & Partial<Pick<typeof api, OptionalUseCase>>;

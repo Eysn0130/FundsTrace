@@ -82,6 +82,63 @@ test('source launch isolates runtime and Python settings, preserving only normal
   assert.throws(() => launchConfig({ packaged: false, repoRoot: directory, python: 'python', dataDir: directory }), /absolute/);
 });
 
+test('only an isolated source launch passes trial model and PDF configuration', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'funds-trace-model-trial-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const python = path.join(directory, 'python'); fs.writeFileSync(python, 'not executed');
+  const mineru = path.join(directory, 'mineru-kit'), models = path.join(directory, 'models');
+  const env = { FUNDS_TRACE_MODEL_ENDPOINTS: '{}', FUNDS_TRACE_LICENSE_SECRET: 'test-only-value',
+    FUND_MINERU_EXECUTABLE: mineru, FUND_MINERU_MODEL_DIR: models };
+  const config = { packaged: false, repoRoot: directory, python, dataDir: path.join(directory, 'data'), env };
+  const timeoutKey = 'FUND_MINERU_REVIEW_TIMEOUT_SECONDS';
+  const normal = launchConfig(config);
+  assert.equal('modelTrial' in normal, false);
+  assert.equal(normal.env.FUND_MINERU_EXECUTABLE, undefined);
+  assert.equal(normal.env.FUND_MINERU_MODEL_DIR, undefined);
+  const trial = launchConfig({ ...config, modelTrial: true });
+  assert.equal(trial.modelTrial, '{}');
+  assert.equal(trial.env.FUNDS_TRACE_MODEL_ENDPOINTS, undefined);
+  assert.equal(trial.env.FUNDS_TRACE_LICENSE_SECRET, undefined);
+  assert.equal(trial.env.FUND_MINERU_EXECUTABLE, mineru);
+  assert.equal(trial.env.FUND_MINERU_MODEL_DIR, models);
+  assert.equal(trial.env[timeoutKey], undefined);
+  for (const value of ['90', '600', '900']) {
+    const configured = { ...config, env: { ...env, [timeoutKey]: value } };
+    assert.equal(launchConfig(configured).env[timeoutKey], undefined);
+    assert.equal(launchConfig({ ...configured, modelTrial: true }).env[timeoutKey], value);
+  }
+  for (const value of ['', '89', '901', '090', '90.0', '9e1', '90\n', '９０', ' 90', 90]) {
+    assert.throws(() => launchConfig({ ...config, modelTrial: true,
+      env: { ...env, [timeoutKey]: value } }), /90 to 900/);
+  }
+  assert.throws(() => launchConfig({ ...config, modelTrial: true,
+    env: { [timeoutKey]: '600' } }), /absolute paths/);
+  assert.throws(() => launchConfig({ ...config, modelTrial: true,
+    env: { FUND_MINERU_EXECUTABLE: mineru } }), /absolute paths/);
+  assert.throws(() => launchConfig({ ...config, modelTrial: true,
+    env: { ...env, FUND_MINERU_MODEL_DIR: 'relative' } }), /absolute paths/);
+  assert.throws(() => launchConfig({ ...config, modelTrial: true, packaged: true }), /isolated source profile/);
+  assert.throws(() => launchConfig({ ...config, modelTrial: true, dataDir: directory }), /isolated source profile/);
+});
+
+test('reference scope path travels through private bootstrap config only in a Mac source trial', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'funds-trace-model-trial-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const python = path.join(directory, 'python'); fs.writeFileSync(python, 'not executed');
+  const scopeFile = path.join(directory, 'reference-scope.json');
+  const key = 'FUNDS_TRACE_REFERENCE_REVIEW_SCOPE_FILE';
+  const env = { [key]: scopeFile, FUNDS_TRACE_MODEL_ENDPOINTS: '{}' };
+  const inputs = { packaged: false, platform: 'darwin', repoRoot: directory, python,
+    dataDir: path.join(directory, 'data'), env };
+  assert.equal(launchConfig(inputs).referenceReviewScopeFile, undefined);
+  const trial = launchConfig({ ...inputs, modelTrial: true });
+  assert.equal(trial.referenceReviewScopeFile, scopeFile);
+  assert.equal(trial.env[key], undefined);
+  assert.throws(() => launchConfig({ ...inputs, platform: 'win32', modelTrial: true }), /private Mac model trial/);
+  assert.throws(() => launchConfig({ ...inputs, modelTrial: true, env: { [key]: scopeFile } }), /private Mac model trial/);
+  assert.throws(() => launchConfig({ ...inputs, modelTrial: true, env: { ...env, [key]: 'relative.json' } }), /private Mac model trial/);
+});
+
 test('installed launch refuses missing/mismatched native bundles and synthetic mode without fallback', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'funds-trace-bundle-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
@@ -94,6 +151,8 @@ test('installed launch refuses missing/mismatched native bundles and synthetic m
   assert.throws(() => launchConfig(input));
   fs.writeFileSync(path.join(backend, 'funds-trace-backend.exe'), 'not executed');
   assert.equal(launchConfig(input).command, path.join(backend, 'funds-trace-backend.exe'));
+  const configured = launchConfig({ ...input, env: { FUND_MINERU_REVIEW_TIMEOUT_SECONDS: '600' } });
+  assert.equal(configured.env.FUND_MINERU_REVIEW_TIMEOUT_SECONDS, undefined);
   assert.throws(() => launchConfig({ ...input, synthetic: true }), /Synthetic/);
 });
 

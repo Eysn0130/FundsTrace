@@ -31,7 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, model_validator
 
-from . import db, importer, sample_data
+from . import db, importer, sample_data, table_import
 from . import canvas_investigation, evidence_resolution
 from .case_packages import CASE_PKG_TABLES, CASE_PKG_COLS, delete_package_case, export_package, import_package, require_case, photo_name
 from . import license as lic
@@ -604,7 +604,8 @@ def canvas_investigation_time(body: canvas_investigation.TimeInvestigationIn):
     with db._lock:
         require_case(body.case_id)
         _require_canvas(body.case_id, body.canvas_id)
-        return canvas_investigation.time_projection(body)
+        return canvas_investigation.time_projection(
+            body, ledger_display=getattr(app.state, "desktop_model_trial", None) is not None)
 
 
 @app.post("/api/canvas/investigation/paths")
@@ -761,6 +762,19 @@ def _graph(case_id: int, canvas_id: int, view=None):
             "resolution_revision": (current_resolution or {}).get("revision"), "resolution": current_resolution,
             "statistics_policy": funds_projection.SELECTION_POLICY, "transaction_count": sources[(3, None, None)]["cnt"], "nodes": nodes, "edges": edges,
             "tracked_ids": tracked, "main_accounts": mains, "focus_nodes": focus}
+    if getattr(app.state, "desktop_model_trial", None) is not None:
+        observations = {int(flow_id) for edge in edges for flow_id in edge["ids"]}
+        journals = {} if len(edges) == 1 and len(observations) == 2 and not result["funds"]["confirmed_event_count"] else None
+        if ledger := funds_projection.canvas_ledger_summary(
+                case_id, observations, sources[(3, None, None)], result["funds"]["observation_count"], source_cache=journals):
+            result["ledger_summary"] = ledger
+        elif journals:
+            from .services import trial_pair_comparison
+
+            if trial_pair_comparison.account_pair_lead(case_id, observations, journals, with_registration=False):
+                note = {"observation_count": len(observations)}
+                edges[0]["source_observation_notice"] = note
+                result["source_observation_notice"] = note
     source_ledger.attach_graph(case_id, canvas_id, result, view)
     return result
 
@@ -1043,6 +1057,14 @@ def track_bulk(body: BulkTrackIn):
         mains = {r["account"] for r in db.q("select account from effective_main_accounts where case_id = ?",
                                             [body.case_id])}
 
+        destination = None
+        if body.direction == "target" and x == 1 and getattr(app.state, "desktop_model_trial", None) is not None:
+            from .services import trial_pair_comparison
+
+            destination = trial_pair_comparison.recorded_destination(body.case_id, {row["id"] for row in anchors})
+            if destination:
+                _require_graphable(body.case_id, [int(destination["debit"]["id"])])
+
         pick_ids = set()
         detail = []
         skipped_main = []
@@ -1058,7 +1080,14 @@ def track_bulk(body: BulkTrackIn):
             picked = 0
             rows = []
             navigation = {"status": "not_main", "reasons": []}
-            if acct in mains:
+            if destination:
+                acct = destination["receiver_account"]
+                target = int(destination["debit"]["id"])
+                rows = [{"id": target}]
+                pick_ids.add(target)
+                picked = 1
+                navigation = {"status": "recorded_next_spend", "reasons": []}
+            elif acct in mains:
                 from . import ledger_navigation
                 navigation = ledger_navigation.neighbors(body.case_id, acct, f, body.direction, x)
                 rows = navigation["rows"]
@@ -1077,7 +1106,7 @@ def track_bulk(body: BulkTrackIn):
                 "is_main": acct in mains,
                 "ordering": {key: navigation[key] for key in ("status", "reasons")},
             })
-            if acct in mains:
+            if acct in mains and destination is None:
                 from . import principal_evidence
                 detail[-1]["principal"] = principal_evidence.tracking_result(body.case_id, acct, f, rows, body.direction)
             pick_ids.add(f["id"])   # 锚点本身（本笔交易）也上图
@@ -1091,7 +1120,8 @@ def track_bulk(body: BulkTrackIn):
             "select flow_id from tracked_flows where case_id=? and canvas_id=? order by flow_id",
             [body.case_id, body.canvas_id])]
         return {"ok": True, "tracked": len(pick_ids), "anchors": len(anchors),
-                "detail": detail, "skipped_not_main": skipped_main, "tracked_ids": tracked_ids}
+                "detail": detail, "skipped_not_main": skipped_main, "tracked_ids": tracked_ids,
+                **({"recorded_destination": destination} if destination else {})}
 
 @app.get("/api/context/{flow_id}")
 def context(flow_id: int, x: int = Query(5, ge=1, le=50), side: str = "payee", case_id: int = 1,
@@ -1100,7 +1130,8 @@ def context(flow_id: int, x: int = Query(5, ge=1, le=50), side: str = "payee", c
         if review:
             _require_canvas(case_id, canvas_id)
         value = _context(flow_id, x, side, case_id, for_review=review)
-        return trace_review.read(case_id, canvas_id, flow_id, x, value, _context) if review else value
+        return trace_review.read(case_id, canvas_id, flow_id, x, value, _context,
+                                 product=getattr(app.state, "desktop_model_trial", None) is not None) if review else value
 
 
 class EdgeReviewIn(BaseModel):
@@ -1118,7 +1149,7 @@ class EdgeReviewIn(BaseModel):
 def context_edge(body: EdgeReviewIn):
     with db._lock:
         _require_canvas(body.case_id, body.canvas_id)
-        return trace_review.edge(body, _context)
+        return trace_review.edge(body, _context, product=getattr(app.state, "desktop_model_trial", None) is not None)
 
 
 class ContextSummaryIn(BaseModel):
@@ -1137,7 +1168,36 @@ def context_summary(body: ContextSummaryIn,
 @app.get("/api/context/{anchor_id}/record/{flow_id}")
 def context_record(anchor_id: int, flow_id: int, case_id: int, canvas_id: int = 0,
                    review_token: str = Header(alias="X-FundsTrace-Review", pattern=r"^[0-9a-f]{32}$")):
-    return trace_review.original(case_id, canvas_id, anchor_id, flow_id, review_token)
+    return trace_review.original(case_id, canvas_id, anchor_id, flow_id, review_token,
+                                 product=getattr(app.state, "desktop_model_trial", None) is not None)
+
+
+class ContextCitationIn(BaseModel):
+    source_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    parser_version: str = Field(min_length=1, max_length=128)
+    member_path: str = Field(min_length=1, max_length=4096)
+    source_row: int = Field(strict=True, gt=0, lt=2**63)
+    header_row: int = Field(strict=True, gt=0, lt=2**63)
+    column: int = Field(strict=True, gt=0, le=table_import.MAX_COLUMNS)
+
+
+class ContextCounterpartyCitationIn(BaseModel):
+    case_id: int = Field(gt=0, lt=2**63)
+    canvas_id: int = Field(default=0, ge=0, lt=2**63)
+    analysis_revision: str = Field(pattern=r"^[0-9a-f]{32}$")
+    candidate: Literal["account", "card"]
+    citation: ContextCitationIn
+
+
+@app.post("/api/context/{anchor_id}/record/{flow_id}/verify")
+def verify_context_counterparty_column(anchor_id: int, flow_id: int, body: ContextCounterpartyCitationIn,
+                                       review_token: str = Header(alias="X-FundsTrace-Review", pattern=r"^[0-9a-f]{32}$")):
+    return _legacy_import_result(
+        trace_review.verify_counterparty_column,
+        body.case_id, body.canvas_id, anchor_id, flow_id, review_token, body.analysis_revision,
+        body.candidate, body.citation.model_dump(),
+    )
 
 
 @app.delete("/api/context/review")

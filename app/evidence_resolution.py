@@ -16,16 +16,18 @@ from pathlib import Path
 import tempfile
 import unicodedata
 
-from . import db, table_direction_recheck
+from . import db, table_direction_recheck, table_tiered_headers
+from .table_import import CSV_TAIL_FINANCIAL_PROFILES, DEPOSIT_CSV_TRIAL_PROFILES, TRIAL_MEMBER_ARCHIVE_PROFILE, TRIAL_TABLE_PROFILES
 
 POLICY = "typed-account-evidence-v1"
 CARD_PROJECTION = "endpoint-cards-v4-scoped-order"
 _SCOPED_EQUAL_REASON = "scoped_equal_account_card_declaration"
 DETAIL_FIELD = "resolution_evidence"
+TRIAL_LEAF_OCCURRENCE_PREFIX = "trial-leaf:"
 TABLE_PROFILE = "funds-trace-table-v20"
 ARCHIVE_PROFILE = "funds-trace-table-archive-v6"
 FEEDBACK_PROFILE = "funds-trace-bank-feedback-v6"
-PROFILES = frozenset((table_direction_recheck.PROFILE, "funds-trace-table-archive-v66", "funds-trace-table-archive-v67", "funds-trace-table-archive-v68",
+PROFILES = frozenset((TRIAL_MEMBER_ARCHIVE_PROFILE, *CSV_TAIL_FINANCIAL_PROFILES, *TRIAL_TABLE_PROFILES, *DEPOSIT_CSV_TRIAL_PROFILES, table_direction_recheck.PROFILE, table_tiered_headers.PROFILE, "funds-trace-table-archive-v66", "funds-trace-table-archive-v67", "funds-trace-table-archive-v68",
                      "funds-trace-table-v78", "funds-trace-table-v79", "funds-trace-table-v80",
                      "funds-trace-table-archive-v63", "funds-trace-table-archive-v64", "funds-trace-table-archive-v65",
                      "funds-trace-table-v75", "funds-trace-table-v76", "funds-trace-table-v77",
@@ -33,7 +35,7 @@ PROFILES = frozenset((table_direction_recheck.PROFILE, "funds-trace-table-archiv
 _PROFILE_SQL = ",".join("?" for _ in PROFILES)
 # Neutral source endpoints participate in identity replay without changing the
 # ordinary profiles' financial occurrence identity or historical CSV bridge.
-OCCURRENCE_PROFILES = PROFILES - {table_direction_recheck.PROFILE, "funds-trace-table-archive-v66", "funds-trace-table-v78", "funds-trace-table-v79",
+OCCURRENCE_PROFILES = PROFILES - {*CSV_TAIL_FINANCIAL_PROFILES, *TRIAL_TABLE_PROFILES, *DEPOSIT_CSV_TRIAL_PROFILES, table_direction_recheck.PROFILE, table_tiered_headers.PROFILE, "funds-trace-table-archive-v66", "funds-trace-table-v78", "funds-trace-table-v79",
                                   "funds-trace-table-archive-v63", "funds-trace-table-v75", "funds-trace-table-v76",
                                   "funds-trace-table-v69", "funds-trace-table-v72", "funds-trace-table-v70", "funds-trace-table-v73", "funds-trace-table-v66", "funds-trace-table-v67", "funds-trace-table-archive-v57", "funds-trace-table-archive-v60"}
 _MAX_TEXT = 512
@@ -138,7 +140,8 @@ def auxiliary_evidence(headers, cells, role, *, native_observations=False):
     return _json(value)
 
 
-def transaction_evidence(headers, cells, candidates, result, pair_reader, *, own_side="", include_counter=False):
+def transaction_evidence(headers, cells, candidates, result, pair_reader, *, own_side="", include_counter=False,
+                         excluded_account_fallback=()):
     endpoints = {}
     for side in ("payer", "payee", "self", "counter"):
         account, card = pair_reader(cells, candidates, side + "_account", [])
@@ -150,7 +153,9 @@ def transaction_evidence(headers, cells, candidates, result, pair_reader, *, own
         if side == "self":
             bank = _field(headers, cells, {"本方开户银行", "本方开户行", "账号开户银行", "交易账户开户银行"})
         mixed_headers = {"交易对手账卡号", "交易对方账卡号", "交易对方帐卡号", "对手账卡号", "本方账卡号", "账卡号"}
-        identifier_type = ("account_or_card" if any(item.get("source_name", "").strip() in mixed_headers for item in candidates.get(side + "_account", ())) else "account" if account else "card")
+        mixed_identifier = any(item.get("mixed_identifier") or item.get("source_name", "").strip() in mixed_headers
+                               for item in candidates.get(side + "_account", ()))
+        identifier_type = "account_or_card" if mixed_identifier else "account" if account else "card"
         endpoints[side] = {"account": _text(account), "card": _text(card), "identifier_type": identifier_type, "bank": _text(bank),
                            "name": _text(result.get(side + "_name", ""))}
     own = result.get("self_account") or ""
@@ -173,7 +178,7 @@ def transaction_evidence(headers, cells, candidates, result, pair_reader, *, own
     # The parser can select a supported explicit party field after completing
     # its roles. Retain that account only if the typed pair has no card fallback.
     for side in ("payer", "payee", "self"):
-        if not endpoints[side]["account"] and not endpoints[side]["card"]:
+        if side not in excluded_account_fallback and not endpoints[side]["account"] and not endpoints[side]["card"]:
             endpoints[side]["account"] = _text(result.get(side + "_account", ""))
             endpoints[side]["identifier_type"] = "account"
     from . import table_import
@@ -181,6 +186,13 @@ def transaction_evidence(headers, cells, candidates, result, pair_reader, *, own
     eligible = "yes" if len(headers) == len(signature) and signature in {
         table_import.BANK_FEEDBACK_32_COLUMNS, table_import.BANK_FEEDBACK_31_COLUMNS} else "no"
     roles = ("payer", "payee", "self", "counter") if include_counter and not own_side else ("payer", "payee", "self")
+    # The portable transaction declaration binds every role to the retained
+    # observation. A manual mapping can leave that declaration incomplete.
+    if excluded_account_fallback and any(
+        (endpoints[side]["account"] or endpoints[side]["card"]) != (result.get(side + "_account") or "")
+        for side in roles
+    ):
+        return None
     return _json({"role": "transaction", "scope_eligible": eligible, "own_side": own_side, "endpoints": {side: endpoints[side] for side in roles}})
 
 
@@ -233,6 +245,12 @@ def validate_evidence(value):
 
 def occurrence_key(member_sha, position):
     return hashlib.sha256(_json([POLICY, member_sha, position]).encode()).hexdigest()
+
+
+def trial_leaf_occurrence_key(profile, family):
+    if profile in TRIAL_TABLE_PROFILES and family:
+        return f"{TRIAL_LEAF_OCCURRENCE_PREFIX}{profile}:{family}"
+    return None
 
 
 def bind_occurrences(plan, *, operation_scopes=False):
@@ -295,9 +313,9 @@ def bind_occurrences(plan, *, operation_scopes=False):
             if row.get("_source_posting_repeat_key") and plan["profile"] in table_import.SOURCE_CONTRACT_PROFILES:
                 posting = family, record["member_path"], members[record["member_path"]], row["_source_posting_repeat_key"]
                 position = repeated_postings.setdefault(posting, position)
-            bind_occurrence_fields(row, record,
-                occurrence_key(members[record["member_path"]], position),
-                scope)
+            leaf = (trial_leaf_occurrence_key(record["details"].get(table_import.TRIAL_MEMBER_PROFILE_FIELD), family)
+                    if plan["profile"] == TRIAL_MEMBER_ARCHIVE_PROFILE else None)
+            bind_occurrence_fields(row, record, leaf or occurrence_key(members[record["member_path"]], position), scope)
         return plan
     finally:
         previous_value = previous_projection = None
@@ -1422,39 +1440,137 @@ def reject_historical_overlap(case_id, plan):
     from .import_staging import record_map
     store = plan.get("_plan_store")
     previous = store.mapping() if store is not None else {}
-    cursor = db.con().execute(f"""select distinct m.sha256,r.source_row from import_members m
+    trial_links = plan.get("_trial_occurrence_links", {})
+    cursor = db.con().execute(f"""select distinct m.sha256,r.source_row,s.parser_version from import_members m
         join import_records r on r.case_id=m.case_id and r.source_id=m.source_id and r.member_path=m.member_path
         join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
         join flow_sources fs on fs.case_id=r.case_id and fs.source_id=r.source_id and fs.source_row=r.record_no
         where r.case_id=? and m.sha256 in ({placeholders}) and s.parser_version not in ({','.join('?' for _ in OCCURRENCE_PROFILES)})""", [case_id, *digests, *sorted(OCCURRENCE_PROFILES)])
     while batch := cursor.fetchmany(1024):
-        for digest, position in batch:
-            previous[digest, position] = True
+        for digest, position, source_profile in batch:
+            key = digest, position
+            previous[key] = previous.get(key, False) or source_profile not in TRIAL_TABLE_PROFILES
     members = {member["member_path"]: member["sha256"] for member in plan["members"]}
     records = record_map(plan)
-    cursor = db.con().execute(f"""select distinct m.sha256,r.source_row,json_extract_string(r.details_json,'$.occurrence_scope') occurrence_scope
+    cursor = db.con().execute(f"""select distinct m.sha256,r.source_row,s.parser_version,
+        json_extract_string(r.details_json,'$.occurrence_scope') occurrence_scope
         from import_members m join import_records r on r.case_id=m.case_id and r.source_id=m.source_id and r.member_path=m.member_path
         join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
         join flow_sources fs on fs.case_id=r.case_id and fs.source_id=r.source_id and fs.source_row=r.record_no
         where r.case_id=? and m.sha256 in ({placeholders}) and s.parser_version in ({_PROFILE_SQL})""", [case_id, *digests, *sorted(PROFILES)])
     prior_scopes = store.mapping() if store is not None else {}
     while batch := cursor.fetchmany(1024):
-        for digest, position, scope in batch:
+        for digest, position, source_profile, scope in batch:
             key = digest, position
             values = prior_scopes.get(key, set())
-            values.add(scope or "")
+            values.add((source_profile, scope or ""))
             prior_scopes[key] = values
     if prior_scopes:
         for row in plan["rows"]:
             record = records[row["_source_row"]]
             current_scope = row.get("_occurrence_scope") or ""
-            for old_scope in prior_scopes.get((members[record["member_path"]], record["source_row"]), set()):
+            for old_profile, old_scope in prior_scopes.get((members[record["member_path"]], record["source_row"]), set()):
+                if record["record_no"] in trial_links and old_profile in TRIAL_TABLE_PROFILES:
+                    continue
                 if current_scope != old_scope and (not current_scope or not old_scope or current_scope.startswith("unscoped:") or old_scope.startswith("unscoped:")):
                     from .services.cases import ServiceError
                     raise ServiceError(409, "evidence_context_overlap", "相同原件已有未确定的来源范围，本次补充上下文无法安全衔接，未重复入账；请仅补辅助资料，或在新案件导入完整目录")
-    if previous and any((members[records[row["_source_row"]]["member_path"]], records[row["_source_row"]]["source_row"]) in previous for row in plan["rows"]):
-        from .services.cases import ServiceError
-        raise ServiceError(409, "historical_evidence_overlap", "本案已有相同原件的历史资金解释，无法安全自动迁移；请在新案件导入完整目录，原案件和回执已保留")
+    if previous:
+        for row in plan["rows"]:
+            record = records[row["_source_row"]]
+            key = members[record["member_path"]], record["source_row"]
+            if key in previous and (previous[key] or record["record_no"] not in trial_links):
+                from .services.cases import ServiceError
+                raise ServiceError(409, "historical_evidence_overlap", "本案已有相同原件的历史资金解释，无法安全自动迁移；请在新案件导入完整目录，原案件和回执已保留")
+
+
+def trial_occurrence_links(case_id, plan):
+    """Reuse a single proved flow for the same trial original through either entry."""
+    from . import table_import
+    from .import_staging import row_records
+    from .services.cases import ServiceError
+
+    profile = plan.get("profile") if plan else None
+    archived = profile == TRIAL_MEMBER_ARCHIVE_PROFILE
+    if not (archived or profile in TRIAL_TABLE_PROFILES) or not plan["rows"]:
+        return {}
+    leaf_field = table_import.TRIAL_MEMBER_PROFILE_FIELD
+    members = {member["member_path"]: member["sha256"] for member in plan["members"]}
+    digests = sorted(set(members.values()))
+    fields = (*table_import.STORED_FLOW_FIELDS, "self_account", "self_name")
+    profiles = sorted(TRIAL_TABLE_PROFILES | {TRIAL_MEMBER_ARCHIVE_PROFILE})
+    cursor = db.con().execute(f"""select m.sha256,r.source_row,s.parser_version,f.flow_id,
+            json_extract_string(r.details_json,'$.{leaf_field}'),
+            json_extract_string(r.details_json,'$.evidence_family'),
+            json_extract_string(r.details_json,'$.family_member_sha256'),
+            {','.join('v.' + field for field in fields)}
+        from import_members m join import_records r using(case_id,source_id,member_path)
+        join import_sources s using(case_id,source_id)
+        join import_source_operations op using(case_id,source_id)
+        join flow_sources f on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
+        join flows v on v.case_id=f.case_id and v.id=f.flow_id
+        where m.case_id=? and op.active and r.disposition in ('imported','duplicate')
+          and m.sha256 in (select unnest(?::varchar[]))
+          and s.parser_version in (select unnest(?::varchar[]))""", [case_id, digests, profiles])
+    store = plan.get("_plan_store")
+    history = store.mapping() if store is not None else {}
+    while batch := cursor.fetchmany(1024):
+        for digest, position, parent, flow_id, leaf, family, member, *values in batch:
+            original = dict(zip(fields, values))
+            key = digest, position
+            witnesses = history.get(key, set())
+            witnesses.add((parent, leaf if parent == TRIAL_MEMBER_ARCHIVE_PROFILE else parent,
+                family, member, table_import.flow_digest(original), original["self_account"], original["self_name"], flow_id))
+            history[key] = witnesses
+    if not history:
+        return {}
+    links = {}
+    families = None
+    if archived:
+        families = store.mapping() if store is not None else {}
+    family_conflict = "不同已核原件关联同一笔历史流水，目录导入无法继承此来源关系"
+    for row, record in row_records(plan, kinds=("rows",)):
+        details = record["details"]
+        leaf = details.get(leaf_field) if archived else profile
+        if leaf not in TRIAL_TABLE_PROFILES:
+            continue
+        previous = history.get((members[record["member_path"]], record["source_row"]), ())
+        if not previous or not archived and not any(entry[0] == TRIAL_MEMBER_ARCHIVE_PROFILE for entry in previous):
+            continue
+        expected = (leaf, details["evidence_family"], details["family_member_sha256"], table_import.flow_digest(row),
+                    row["self_account"], row["self_name"])
+        if any(entry[1:-1] != expected for entry in previous):
+            raise ServiceError(409, "trial_occurrence_conflict", "同一原件物理行的历史解释不一致，未链接或重复入账")
+        ids = {entry[-1] for entry in previous}
+        if len(ids) != 1:
+            raise ServiceError(409, "trial_occurrence_ambiguous", "同一原件物理行已有多条流水，无法确定唯一来源链接")
+        flow_id, = ids
+        links[record["record_no"]] = flow_id
+        if families is not None:
+            family = details["evidence_family"]
+            earlier = families.get(flow_id)
+            if earlier is None:
+                families[flow_id] = family
+            elif earlier != family:
+                raise ServiceError(409, "trial_occurrence_conflict", family_conflict)
+    if families is not None:
+        # Another active single-file import can already share a proved flow
+        # even when its original is outside this directory's member list.
+        flow_ids = iter(families)
+        while focus := list(islice(flow_ids, REPLAY_CHUNK)):
+            shared = db.q_raw(f"""select 1 from flow_sources f
+                join (select unnest(?::bigint[]) flow_id,unnest(?::varchar[]) expected_family) wanted using(flow_id)
+                join import_records r on r.case_id=f.case_id and r.source_id=f.source_id and r.record_no=f.source_row
+                join import_source_operations op on op.case_id=f.case_id and op.source_id=f.source_id and op.active
+                join import_sources s on s.case_id=f.case_id and s.source_id=f.source_id
+                where f.case_id=? and r.disposition in ('imported','duplicate')
+                  and (case when s.parser_version=? then json_extract_string(r.details_json,'$.{leaf_field}')
+                            else s.parser_version end) in (select unnest(?::varchar[]))
+                  and json_extract_string(r.details_json,'$.evidence_family')<>wanted.expected_family limit 1""",
+                [focus, [families[key] for key in focus], case_id, TRIAL_MEMBER_ARCHIVE_PROFILE, sorted(TRIAL_TABLE_PROFILES)])
+            if shared:
+                raise ServiceError(409, "trial_occurrence_conflict", family_conflict)
+    return links
 
 
 def decorate_analysis(case_id, result):
@@ -1529,6 +1645,8 @@ def bind_families(plan):
         path = member["member_path"]
         container = contexts.get(path, "")
         within = path[len(container) + 1:] if container and path.startswith(container + "/") else path
+        if plan["profile"] == TRIAL_MEMBER_ARCHIVE_PROFILE and path == container:
+            within = "table.csv"
         relative[path] = within
         canonical_role = "table" if member["role"] in {"table", "transaction"} else "attachment" if member["role"] == "attachment" else "auxiliary"
         grouped[container].append((within, member["sha256"], canonical_role))

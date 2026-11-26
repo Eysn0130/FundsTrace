@@ -58,6 +58,38 @@ def transaction_fields(rows):
             'amount_totals': amounts}
 
 
+def canvas_ledger_summary(case_id, observation_ids, transactions, observation_count, *, source_cache=None):
+    """Fold proved mirrors in the canvas display, outside economic projections."""
+    from . import event_resolution
+    from .services import trial_pair_comparison
+
+    selected = set(map(int, observation_ids))
+    if not selected:
+        return None
+    pairs = trial_pair_comparison.canvas_ledger_pairs(case_id, selected, cross_source_display=True, source_cache=source_cache)
+    if not pairs:
+        return None
+    governed = {int(row["flow_id"]) for row in event_resolution.members(
+        case_id, [key for pair in pairs for key in pair["flow_ids"]])}
+    pairs = [pair for pair in pairs if not governed.intersection(pair["flow_ids"])]
+    if not pairs:
+        return None
+
+    folded = [pair for pair in pairs if selected.issuperset(pair["flow_ids"])]
+    with localcontext() as context:
+        context.prec = 50
+        deductions = {}
+        for pair in folded:
+            currency = pair["currency"]
+            deductions[currency] = deductions.get(currency, Decimal(0)) + pair["amount"]
+        totals = [{"currency": row["currency"],
+                   "amount": (format(money_decimal(row["amount"]) - deductions.get(row["currency"], Decimal(0)), ".2f")
+                              if row["amount"] is not None else None)}
+                  for row in transactions["amount_totals"]]
+    return {"policy": "selected-ledger-actions-v1", "count": transactions["cnt"] - len(folded),
+            "observation_count": observation_count, "folded_pairs": len(folded), "amount_totals": totals}
+
+
 def cte(source_sql, *, include_ids=False):
     """WITH prefix exposing original selected_observations and selected_facts.
 

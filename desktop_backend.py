@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import stat
 import sys
 import threading
 import time
@@ -23,7 +24,8 @@ def read_bootstrap(stream):
     if len(line) > 4096 or not line.endswith("\n"):
         raise ValueError("Invalid desktop bootstrap")
     value = json.loads(line)
-    if (not isinstance(value, dict) or set(value) != {"protocol", "token", "dataDir", "synthetic"}
+    required = {"protocol", "token", "dataDir", "synthetic"}
+    if (not isinstance(value, dict) or not required <= set(value) <= required | {"modelTrial", "referenceReviewScopeFile"}
             or type(value["protocol"]) is not int or value["protocol"] != PROTOCOL
             or not isinstance(value["token"], str) or not re.fullmatch(r"[0-9a-f]{64}", value["token"])
             or not isinstance(value["dataDir"], str) or not Path(value["dataDir"]).is_absolute()
@@ -31,7 +33,46 @@ def read_bootstrap(stream):
         raise ValueError("Invalid desktop bootstrap")
     if value["synthetic"] and getattr(sys, "frozen", False):
         raise ValueError("Synthetic mode is unavailable in distributed applications")
+    if "modelTrial" in value:
+        trial = value["modelTrial"]
+        directory = Path(value["dataDir"]).resolve()
+        if (getattr(sys, "frozen", False) or directory.name != "data"
+                or not directory.parent.name.startswith("funds-trace-model-trial-")
+                or trial is not None and (type(trial) is not str or len(trial.encode("utf-8")) > 2048)):
+            raise ValueError("Model trial requires an isolated source profile")
+    if "referenceReviewScopeFile" in value:
+        scope = value["referenceReviewScopeFile"]
+        if (sys.platform != "darwin" or not value.get("modelTrial") or type(scope) is not str
+                or not Path(scope).is_absolute() or len(scope.encode("utf-8")) > 1024):
+            raise ValueError("Reference review requires a private Mac model trial scope")
     return value
+
+
+def read_reference_review_scope(path):
+    """Read only the owner-controlled startup approval, never a renderer path."""
+    from ctypes import CDLL, c_int, c_void_p, get_errno
+    from errno import ENOENT
+
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as source:
+        entry = os.fstat(source.fileno())
+        if not stat.S_ISREG(entry.st_mode) or entry.st_uid != os.geteuid() or entry.st_mode & 0o077:
+            raise ValueError("Reference review scope must be a private regular file")
+        # Darwin's permission bits do not include extended access grants.
+        system = CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        read_acl = system.acl_get_fd_np
+        read_acl.argtypes, read_acl.restype = (c_int, c_int), c_void_p
+        acl = read_acl(source.fileno(), 0x100)  # ACL_TYPE_EXTENDED, <sys/acl.h>
+        if acl:
+            release_acl = system.acl_free
+            release_acl.argtypes, release_acl.restype = (c_void_p,), c_int
+            release_acl(acl)
+            raise ValueError("Reference review scope must not have an extended ACL")
+        if get_errno() != ENOENT:
+            raise ValueError("Reference review scope ACL could not be verified")
+        raw = source.read(2049)
+    if len(raw) > 2048:
+        raise ValueError("Reference review scope is too large")
+    return json.loads(raw)
 
 
 class DesktopBoundary:
@@ -105,6 +146,19 @@ def main():
 
     from app.main import app
     from app import db
+    if "modelTrial" in bootstrap:
+        from app.services.desktop_model_trial import parse_model_endpoints
+
+        endpoints = parse_model_endpoints(bootstrap["modelTrial"])
+        app.state.desktop_model_trial = (endpoints,)
+        if "referenceReviewScopeFile" in bootstrap:
+            from app.services.import_reference_trial import DesktopReferenceScope
+            from app.services.import_verbatim_balance import _host_allowed
+
+            if not _host_allowed(endpoints):
+                raise ValueError("Reference review requires an approved local runtime")
+            app.state.desktop_reference_review_scope = DesktopReferenceScope(
+                read_reference_review_scope(bootstrap["referenceReviewScopeFile"]))
     import uvicorn
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:

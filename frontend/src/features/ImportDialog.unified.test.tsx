@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ImportJob, ImportPreview, ImportRecordPage, ImportSession } from '../../../contracts/api-v1';
 import type { FundsCaseClientV1, FundsHostActionsV1 } from '../panel/host';
 import { ImportDialog } from './ImportDialog';
+import { ImportModelTrial } from './ImportModelTrial';
 
 const summary: NonNullable<ImportPreview['table_summary']> = {
   profile: 'synthetic', record_total: 2, accepted: 1, unresolved: 1, non_monetary: 0, non_transaction: 0, auxiliary: 0,
@@ -15,6 +16,36 @@ const summary: NonNullable<ImportPreview['table_summary']> = {
 const preview: ImportPreview = { case_id: '1', import_id: '0123456789abcdef', filename: 'synthetic.zip', mode: 'B', automatic: true,
   columns: ['交易时间','金额'], mapping: {}, self_accounts_in_file: [], stats: { total: 2, ok: 1, skipped: 1 }, preview: [], table_summary: summary };
 const result = { total: 2, ok: 1, skipped: 1, rows_dup: 0, batch_id: '1', bad_examples: [], self_accounts: [], self_accounts_count: 0, main_matched: [], accounts_in_batch: 0, main_detected: [], source_id: preview.import_id, table_summary: summary };
+
+it.each([false, true])('shows cited source roles without preparing a financial mapping (registered: %s)', async registered => {
+  const client = clientFor();
+  const revision = 'a'.repeat(32), importId = 'synthetic-columns', onPrepared = vi.fn();
+  client.importModelTrial = vi.fn<NonNullable<FundsCaseClientV1['importModelTrial']>>(async () => ({
+    state: 'proposal', reason: 'source_posting_roles_verified', first_calls: 2, recheck_calls: 0,
+    packet: {
+      domain: 'import', packet_sha256: 'b'.repeat(64), question: '', candidates: [], records: [], gaps: [],
+      facts: { case_id: '1', import_id: importId, revision, field: 'own_direction_amount',
+        header_row: 1, member_path: 'table.csv', source_posting_roles: {
+          scope: 'source_only', direction_column: 2, amount_column: 5, financial_admission: false,
+          rows: [{ source_row: 2, direction: 'out' }, { source_row: 3, direction: 'in' }],
+        } },
+    },
+  }));
+  render(<ImportModelTrial client={client} importId={importId} scopeSignal={new AbortController().signal}
+    layout={{ revision, members: [{ member_path: 'table.csv', header_rows: registered ? [1] : [], sheet: '', source_rows: 3 }] }}
+    registeredDirectionReview={registered}
+    onPrepared={onPrepared} />);
+  fireEvent.click(screen.getByText('隔离试用 · 查表头'));
+  fireEvent.change(screen.getByLabelText('待核字段'), { target: { value: 'own_direction_amount' } });
+  fireEvent.click(screen.getByRole('button', { name: '核对本账方向与发生额' }));
+  await screen.findByText('已核对原列和原行。整区入账仍待核。');
+  expect(screen.getByText(/原第 2 列，原第 5 列是发生额/).textContent).toContain('原第 2 行出账、原第 3 行入账');
+  expect(client.importModelTrial).toHaveBeenCalledWith(importId, {
+    revision, member_path: 'table.csv', header_row: 1, field: 'own_direction_amount',
+  }, expect.any(AbortSignal));
+  expect(onPrepared).not.toHaveBeenCalled();
+});
+
 function clientFor(): FundsCaseClientV1 {
   return { binding: { caseId: '1', scopeKey: 'unified', generation: 1 }, stats: vi.fn(), flows: vi.fn(), imports: vi.fn(), sources: vi.fn(), cleanup: vi.fn(),
     preview: vi.fn(async () => preview), repreview: vi.fn(async () => preview), commit: vi.fn(async () => ({ case_id: '1', import_id: preview.import_id, started: true })),
@@ -223,6 +254,56 @@ describe('the common import workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: '返回数据预览' }));
     await screen.findByRole('button', { name: '待核对 1', pressed: true });
   });
+  it('compares two source rows selected across admitted and pending filters', async () => {
+    const client = clientFor();
+    client.intakeStatus = vi.fn(async () => ({ enabled: true, configured: false }));
+    client.importReview = vi.fn<NonNullable<FundsCaseClientV1['importReview']>>(async (sourceId, memberPath, query) => ({
+      case_id: '1', source_id: sourceId, member_path: memberPath, view: query.view,
+      counts: { all: 2, review: 1, accepted: 1 }, total: query.view === 'all' ? 2 : 1, page: 1, page_size: 50,
+      items: [128, 137].filter(number => query.view === 'all' || (query.view === 'review') === (number === 128)).map(number => ({
+        record_no: number - 1, source_row: number, member_path: memberPath, record_key: `SYN-${number}`,
+        disposition: number === 128 ? 'unresolved' : 'imported', reason_code: number === 128 ? 'invalid_time' : 'transaction_valid',
+        details: {}, flow_id: number === 128 ? null : '1', original: [{ column: 4, header: '借贷标志', value: '出', fields: ['direction'] }],
+      })),
+    }));
+    client.compareImportRows = vi.fn<NonNullable<FundsCaseClientV1['compareImportRows']>>(async (sourceId, body) => ({
+      case_id: '1', source_id: sourceId, member_path: body.member_path, scope: 'selected_source_rows', status: 'excluded',
+      reason: 'same_ledger_same_direction', event_attribution: 'unknown',
+      rows: body.record_nos.map(record_no => ({ record_no, source_row: record_no + 1, own_account_column: 3, direction_column: 4 })),
+    }));
+    mount(client);
+    await screen.findByRole('status', { name: '导入完成' });
+    fireEvent.click(screen.getByRole('treeitem', { name: /b.xlsx/ }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择原始第 128 行核对双侧' }));
+    fireEvent.click(screen.getByRole('button', { name: '已接纳 1' }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择原始第 137 行核对双侧' }));
+    fireEvent.click(screen.getByRole('button', { name: '核对所选两行是否互为双侧' }));
+    await waitFor(() => expect(screen.getByRole('status', { name: '双侧核对结果' }).textContent).toMatch(/排除互为一出一入/));
+    expect(client.compareImportRows).toHaveBeenCalledWith(preview.import_id,
+      { member_path: 'folder/b.xlsx', record_nos: [127, 136] }, expect.any(AbortSignal));
+    expect(screen.getByRole('status', { name: '双侧核对结果' }).textContent).toContain('原始第 137 行');
+    expect(client.commit).toHaveBeenCalledOnce();
+  });
+
+  it('shows source column notes on the ordinary preview while the original accordion is closed', async () => {
+    const client = clientFor();
+    client.intakeStatus = vi.fn(async () => ({ enabled: true, configured: false }));
+    client.importIntake = vi.fn(async () => ({
+      version: 'intake-test', case_id: '1', source_id: preview.import_id, sha256: 'a'.repeat(64), stage: 'done',
+      source_available: true, items: [],
+      source_field_notes: [{ member_path: 'folder/b.xlsx', header_row: 1, columns: [8], rows: [2, 3],
+        text: '对方账号与户名同列。下列原行只有空值或占位，无法提取账号或户名。' },
+      { member_path: 'folder/b.xlsx', header_row: 1, columns: [], text: '本表区无原报余额列。' }],
+    }));
+    mount(client);
+    await screen.findByRole('status', { name: '导入完成' });
+    fireEvent.click(screen.getByRole('treeitem', { name: /b.xlsx/ }));
+    const notes = await screen.findByRole('list', { name: '原表字段核对' });
+    expect(notes.textContent).toContain('表头第 1 行、第 8 列，样值第 2、3 行');
+    expect(within(notes).getByText('本表区无原报余额列。 表头第 1 行。')).toBeTruthy();
+    expect(notes.closest('details')).toBeNull();
+  });
+
   it('opens the selected member in the pending-only preview from the full-width processing summary', async () => {
     const client = clientFor();
     client.importFundsReport = vi.fn<NonNullable<FundsCaseClientV1['importFundsReport']>>(() => new Promise(() => {}));

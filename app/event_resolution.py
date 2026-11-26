@@ -14,13 +14,17 @@ import re
 import unicodedata
 
 from . import db, transaction_time
+from .table_import import TRIAL_MEMBER_ARCHIVE_PROFILE
 
 POLICY = "scoped-event-reference-v1"
 BANK_SUMMARY_POLICY = "scoped-source-postings-v5"
 LEDGER_POLICY = "explicit-ledger-fields-v1"
 DETAIL_FIELD = "event_reference_evidence"
 LEDGER_FIELD = "analysis_evidence"
-PROFILES = frozenset(("funds-trace-table-archive-v67", "funds-trace-table-archive-v68", "funds-trace-table-v80",
+NONUNIQUE_SCOPE = "source_reference_scope_nonunique"
+UNAVAILABLE_SCOPE = "source_reference_scope_unavailable"
+UNREVIEWED_SCOPE = "source_reference_scope_unreviewed"
+PROFILES = frozenset((TRIAL_MEMBER_ARCHIVE_PROFILE, "funds-trace-table-archive-v67", "funds-trace-table-archive-v68", "funds-trace-table-v80",
                      "funds-trace-table-archive-v64", "funds-trace-table-archive-v65", "funds-trace-table-v77",
                      "funds-trace-table-archive-v61", "funds-trace-table-archive-v62", "funds-trace-table-v71", "funds-trace-table-v74", "funds-trace-table-v68", "funds-trace-table-archive-v58", "funds-trace-table-archive-v59", "funds-trace-table-v65","funds-trace-table-v62", "funds-trace-table-archive-v55","funds-trace-table-archive-v52", "funds-trace-table-archive-v56","funds-trace-table-archive-v53", "funds-trace-table-v59", "funds-trace-table-archive-v49", "funds-trace-table-archive-v50", "funds-trace-table-v20", "funds-trace-table-archive-v6", "funds-trace-table-archive-v7", "funds-trace-table-archive-v8", "funds-trace-table-archive-v9", "funds-trace-table-archive-v10", "funds-trace-table-archive-v11", "funds-trace-table-v23", "funds-trace-table-archive-v13", "funds-trace-table-archive-v14", "funds-trace-table-v26", "funds-trace-table-v29", "funds-trace-table-v32", "funds-trace-table-v35", "funds-trace-table-v38", "funds-trace-table-v41", "funds-trace-table-v44", "funds-trace-table-v47", "funds-trace-table-v50", "funds-trace-table-v53", "funds-trace-table-v56", "funds-trace-table-archive-v46", "funds-trace-table-archive-v47", "funds-trace-table-archive-v43", "funds-trace-table-archive-v44", "funds-trace-table-archive-v40", "funds-trace-table-archive-v41", "funds-trace-table-archive-v37", "funds-trace-table-archive-v38", "funds-trace-table-archive-v34", "funds-trace-table-archive-v35", "funds-trace-table-archive-v31", "funds-trace-table-archive-v32", "funds-trace-table-archive-v28", "funds-trace-table-archive-v29", "funds-trace-table-archive-v25", "funds-trace-table-archive-v26", "funds-trace-table-archive-v16", "funds-trace-table-archive-v17", "funds-trace-table-archive-v19", "funds-trace-table-archive-v20", "funds-trace-table-archive-v22", "funds-trace-table-archive-v23"))
 HEADERS = {"issuer": "参考号机构", "channel": "参考号渠道", "business_scope": "参考号业务域",
@@ -96,7 +100,7 @@ def validate_ledger(value):
     return data
 
 
-def resolve(observations):
+def resolve(observations, *, scope_restrictions=()):
     """Pure reference-group decision; duplicate links are not new evidence."""
     groups, flow_keys = defaultdict(list), defaultdict(set)
     for row in observations:
@@ -140,8 +144,14 @@ def resolve(observations):
                 reason = "multiple_entries_on_one_side"
         elif not reason:
             reason = "reference_reused" if len(unique) > 2 else "missing_opposite_ledger"
+        if not reason:
+            if scope_restrictions is None:
+                reason = UNAVAILABLE_SCOPE
+            elif scope_restrictions:
+                reason = scope_restrictions.get(key[:3], "")
         event_id = None
-        status = "unknown" if reason in {"missing_opposite_ledger", "incomplete_ledger_identity", "time_basis_incomparable"} else "conflict"
+        status = ("unknown" if reason in {"missing_opposite_ledger", "incomplete_ledger_identity",
+                                          "time_basis_incomparable", UNAVAILABLE_SCOPE, UNREVIEWED_SCOPE} else "conflict")
         if not reason:
             facts = next(iter(unique.values()))[0]
             evidence = {"policy": POLICY, **dict(zip(HEADERS, key))}
@@ -204,7 +214,7 @@ def _observations(case_id, source_ids=None):
     return rows
 
 
-def rebuild(case_id, *, changed_sources=None, force_full=False):
+def rebuild(case_id, *, changed_sources=None, force_full=False, pair_decision=None):
     """Maintain events inside the caller's transaction, with explicit delta scope.
 
     changed_sources must include every journal whose rows, links or activation
@@ -213,9 +223,13 @@ def rebuild(case_id, *, changed_sources=None, force_full=False):
     checks and revision hashing remain; only affected reference closures replay.
     """
     from . import bank_posting_pairs
+    from .services import trial_delayed_pair
+    if pair_decision is not None:
+        return _full_rebuild(case_id, pair_decision=pair_decision)
     # A new or withdrawn competing posting can invalidate a bank reference
     # outside an explicit-reference cache closure. Reassess that policy fully.
-    if bank_posting_pairs.has_sources(case_id):
+    if (bank_posting_pairs.has_sources(case_id) or trial_delayed_pair.has_sources(case_id)
+            or trial_delayed_pair.has_projection(case_id)):
         return _full_rebuild(case_id)
     if (not force_full and isinstance(changed_sources, (list, tuple, set, frozenset))
             and all(isinstance(source, str) and source for source in changed_sources)
@@ -224,21 +238,43 @@ def rebuild(case_id, *, changed_sources=None, force_full=False):
     return _full_rebuild(case_id)
 
 
-def _full_rebuild(case_id):
+def _full_rebuild(case_id, *, pair_decision=None):
     observations = _observations(case_id)
     cacheable = all(all(key in row for key in ("source_id", "record_no", "source_typed")) for row in observations)
     _replace_cache(case_id, observations if cacheable else None)
     # Without a registered contract there is no event projection to maintain.
     from . import bank_posting_pairs
+    from .services import trial_delayed_pair, trial_pair_decision
     bank_sources = bank_posting_pairs.has_sources(case_id)
-    if not observations and not bank_sources and not db.q_raw("select 1 from event_state where case_id=?", [case_id]):
+    bridge_sources = trial_delayed_pair.has_sources(case_id, trial_delayed_pair.DELAYED_ROLES)
+    if not observations and not bank_sources and not bridge_sources and not db.q_raw("select 1 from event_state where case_id=?", [case_id]):
         return None
-    events, memberships = resolve(observations)
+    restrictions = trial_delayed_pair.same_instant_counterevidence(case_id) if observations else ()
+    if restrictions is None or restrictions:
+        events, memberships = resolve(observations, scope_restrictions=restrictions)
+    else:
+        events, memberships = resolve(observations)
     bank_events, bank_members, bank_observations = (bank_posting_pairs.project(case_id,
         excluded_ids=[member["flow_id"] for member in memberships], single_proof_bytes=True)
         if bank_sources else ([], [], []))
     events.extend(bank_events)
     memberships.extend(bank_members)
+    if bridge_sources:
+        settled, decisions = trial_delayed_pair.project(case_id, observations, memberships)
+        by_flow = {row["flow_id"]: row for row in memberships}
+        revoked = {prior["event_id"] for row in decisions if (prior := by_flow.get(row["flow_id"]))
+                   and prior["event_id"] is not None and prior["event_id"] != row["event_id"]}
+        events = [event for event in events if event["event_id"] not in revoked]
+        events.extend(settled)
+        by_flow.update((row["flow_id"], row) for row in decisions)
+        memberships = list(by_flow.values())
+    adopted, adopted_members = (trial_pair_decision.project(case_id, memberships, pair_decision)
+                                if pair_decision is not None or trial_delayed_pair.has_projection(case_id) else ([], []))
+    if adopted:
+        events.extend(adopted)
+        by_flow = {row["flow_id"]: row for row in memberships}
+        by_flow.update((row["flow_id"], row) for row in adopted_members)
+        memberships = list(by_flow.values())
     observations.extend(bank_observations)
     has_bank_observations = bool(bank_observations)
     del bank_events, bank_members, bank_observations
@@ -266,7 +302,8 @@ def _full_rebuild(case_id):
                   "unresolved_reference_observations": unresolved_count,
                   "confirmed_amount_totals": [{"currency": currency, "amount": format(amount, ".2f")} for currency, amount in sorted(totals.items())],
                   "complete_event_total": False,
-                  "note": ("仅登记的明确作用域合同、完整双侧过账或独立账簿余额证明可确认；未证明记录保留。单笔与配对源过账均不证明外部结算或最终权属，确认金额不是全案经济事件总额。"
+                  "note": ("原始过账及独立清算对应声明共同支持限域同笔。各账簿原始金额、余额和时钟仍保留。确认金额不代表全案经济事件总额或最终权属。"
+                           if bridge_sources or adopted else "仅登记的明确作用域合同、完整双侧过账或独立账簿余额证明可确认；未证明记录保留。单笔与配对源过账均不证明外部结算或最终权属，确认金额不是全案经济事件总额。"
                            if has_bank_observations else "仅明确作用域且双边唯一的来源声明可关联；未关联记录仍保留，已关联事件额不是全案经济事件总额。")}
     db.x("delete from event_members where case_id=?", [case_id])
     db.x("delete from resolved_events where case_id=?", [case_id])
@@ -537,6 +574,8 @@ def review_pair(case_id, anchor, *, limit=64):
     Include registered peers even when their amounts or times disagree. A
     same-time mirror without registered proof only explains an open question.
     """
+    from .services import trial_delayed_pair
+
     seed = members(case_id, [anchor["id"]])
     member = seed[0] if seed else {}
     if member.get("status") == "confirmed":
@@ -546,13 +585,21 @@ def review_pair(case_id, anchor, *, limit=64):
             join resolved_events e on e.case_id=m.case_id and e.event_id=m.event_id
             join effective_flows f on f.case_id=m.case_id and f.id=m.flow_id
             where m.case_id=? and m.event_id=? and m.status='confirmed'
-              and json_extract_string(e.evidence_json,'$.policy') in (?,?)
+              and json_extract_string(e.evidence_json,'$.policy') in (?,?,?,?,?)
               and f.self_account in (e.payer_account,e.payee_account) order by m.flow_id""",
-            [case_id, member["event_id"], POLICY, bank_posting_pairs.POLICY])
+            [case_id, member["event_id"], POLICY, bank_posting_pairs.POLICY, trial_delayed_pair.POLICY,
+             trial_delayed_pair.SEPARATE_POLICY, trial_delayed_pair.DECISION_POLICY])
         if len({row["self_account"] for row in rows}) == 2:
-            return {"status": "confirmed", "reason": member["reason"],
+            result = {"status": "confirmed", "reason": member["reason"],
                     "candidate_ids": [str(row["flow_id"]) for row in rows[:limit]],
                     "more": len(rows) > limit}
+            if member["reason"] == trial_delayed_pair.REASON:
+                result["proof"] = trial_delayed_pair.review_proof(case_id, anchor["id"])
+                if result["proof"] is None:
+                    return {"status": "unknown", "reason": "settlement_bridge_original_unavailable",
+                            "candidate_ids": [fid for fid in result["candidate_ids"] if fid != str(anchor["id"])],
+                            "more": result["more"]}
+            return result
     stamp = transaction_time.clock(anchor)
     clock_column = "trade_time_utc" if transaction_time.basis(anchor) == "utc" else "trade_time"
     possible = db.q_raw(f"""with seed as (
@@ -579,9 +626,19 @@ def review_pair(case_id, anchor, *, limit=64):
         [case_id, anchor["id"], stamp, case_id, anchor["id"], limit + 1])
     vouchers = {str(row["id"]) for row in _voucher_candidates(case_id, anchor["id"], limit + 1)}
     ids = list(dict.fromkeys([*(str(row["id"]) for row in possible), *sorted(vouchers, key=int)]))
-    more = len(ids) > limit
+    reason = member.get("reason") or ("voucher_candidate_only" if vouchers else "no_scoped_event_proof")
+    if reason in {"conflicting_event_facts", "time_basis_incomparable"}:
+        late, more_late = trial_delayed_pair.opposite_candidates(case_id, anchor, limit)
+        if late:
+            reason = trial_delayed_pair.MISSING_CORRESPONDENCE
+    elif reason.startswith("settlement_bridge_"):
+        late, more_late = trial_delayed_pair.opposite_candidates(case_id, anchor, limit, ids)
+    else:
+        late, more_late = [], False
+    ids.extend(key for key in late if key not in ids)
+    more = more_late or len(ids) > limit
     return {"status": "conflict" if member.get("status") == "conflict" else "unknown",
-            "reason": member.get("reason") or ("voucher_candidate_only" if vouchers else "no_scoped_event_proof"),
+            "reason": reason,
             "candidate_ids": ids[:limit], "voucher_candidate_ids": [key for key in ids[:limit] if key in vouchers],
             "more": more}
 

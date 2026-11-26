@@ -50,15 +50,38 @@ export function createHttpFundsSession({ context, scopeKey, generation, transpor
   };
   const previewDirectory = transport.previewDirectory;
   if (previewDirectory) client.previewDirectory = (files, signal) => run(signal, combined => previewDirectory(caseId, files, combined));
+  const importModelTrial = transport.importModelTrial;
+  if (importModelTrial) client.importModelTrial = (importId, body, signal) =>
+    run(signal, combined => importModelTrial(caseId, importId, body, combined));
+  const importReferenceTrial = transport.importReferenceTrial;
+  if (importReferenceTrial) client.importReferenceTrial = (importId, body, signal) =>
+    run(signal, combined => importReferenceTrial(caseId, importId, body, combined));
+  const importColumnEvidence = transport.importColumnEvidence;
+  if (importColumnEvidence) client.importColumnEvidence = (importId, body, signal) =>
+    run(signal, combined => importColumnEvidence(caseId, importId, body, combined));
+  const { intakeStatus, importIntake, importIntakePage, downloadIntakeMember } = transport;
+  if (intakeStatus) client.intakeStatus = signal => run(signal, intakeStatus);
+  if (importIntake) client.importIntake = (sourceId, signal) => run(signal, combined => importIntake(caseId, sourceId, combined));
+  if (importIntakePage) client.importIntakePage = (sourceId, member, page, signal) =>
+    run(signal, combined => importIntakePage(caseId, sourceId, member, page, combined));
+  if (downloadIntakeMember) client.downloadIntakeMember = (sourceId, member, filename, signal) =>
+    run(signal, combined => downloadIntakeMember(caseId, sourceId, member, filename, combined));
   const { importSourceMetadata, withdrawImportSource } = transport;
   if (importSourceMetadata) client.importSourceMetadata = (sourceId, signal) => run(signal, combined => importSourceMetadata(caseId, sourceId, combined));
   if (withdrawImportSource) client.withdrawImportSource = (sourceId, batchId, signal) => run(signal, combined => withdrawImportSource(caseId, sourceId, batchId, combined));
   const importRecords = transport.importRecords;
-  if (importRecords) client.importRecords = (sourceId, page = 1, signal, memberPath, sourceRow) => run(signal, combined => sourceRow !== undefined
-    ? importRecords(caseId, sourceId, page, combined, memberPath, sourceRow) : memberPath === undefined
-      ? importRecords(caseId, sourceId, page, combined) : importRecords(caseId, sourceId, page, combined, memberPath));
-  const importReview = transport.importReview;
+  if (importRecords) client.importRecords = (sourceId, page = 1, signal, memberPath, sourceRow, pdfPage) => run(signal, combined => {
+    if (pdfPage !== undefined) return importRecords(caseId, sourceId, page, combined, memberPath, sourceRow, pdfPage);
+    if (sourceRow !== undefined) return importRecords(caseId, sourceId, page, combined, memberPath, sourceRow);
+    if (memberPath !== undefined) return importRecords(caseId, sourceId, page, combined, memberPath);
+    return importRecords(caseId, sourceId, page, combined);
+  });
+  const { importReview, compareImportRows, importSignedAmounts } = transport;
   if (importReview) client.importReview = (sourceId, memberPath, query, signal) => run(signal, combined => importReview(caseId, sourceId, memberPath, query, combined));
+  if (compareImportRows) client.compareImportRows = (sourceId, body, signal) =>
+    run(signal, combined => compareImportRows(caseId, sourceId, body, combined));
+  if (importSignedAmounts) client.importSignedAmounts = (sourceId, memberPath, signal) =>
+    run(signal, combined => importSignedAmounts(caseId, sourceId, memberPath, combined));
   const { importFundsReport, verifyImportSource, importReportRecords, importReportAccounts } = transport;
   if (importFundsReport) client.importFundsReport = (sourceId, query, signal) => run(signal, combined => importFundsReport(caseId, sourceId, query, combined));
   if (verifyImportSource) client.verifyImportSource = (sourceId, query, signal) => run(signal, combined => verifyImportSource(caseId, sourceId, query, combined));

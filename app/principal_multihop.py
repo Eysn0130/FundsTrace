@@ -7,13 +7,15 @@ claim about money's real-world fate or a missing-ledger reconstruction.
 from collections import defaultdict
 from datetime import datetime
 import heapq
+from urllib.parse import urlencode
 
-from . import event_resolution, principal_ledger
+from . import db, event_resolution, principal_ledger
 
 MAX_EVENTS = 20_000
+_TRANSFER_REVIEW_LIMIT = 12
 
 
-def calculate(case_id, request):
+def calculate(case_id, request, *, trial_originals=False):
     """Allocate the recorded book model with a first-exit accounting boundary.
 
     Coverage, credit and availability remain unknown. Leaving the selected
@@ -62,7 +64,8 @@ def calculate(case_id, request):
             "reasons": [], "interval": {"start": request.start, "end": request.end}}
     if reasons:
         return {**output, "status": status if status != "ready" else "unknown", "reasons": sorted(set(reasons))}
-    return _calculate_loaded(case_id, request, accounts, by_account, rows, opening, output, allow_order_inference=False)
+    return _calculate_loaded(case_id, request, accounts, by_account, rows, opening, output,
+                             allow_order_inference=False, trial_originals=trial_originals)
 
 
 def _calculate_conditioned(case_id, request):
@@ -91,7 +94,39 @@ def _calculate_conditioned(case_id, request):
     return _calculate_loaded(case_id, request, accounts, by_account, rows, opening, output, allow_order_inference=True)
 
 
-def _calculate_loaded(case_id, request, accounts, by_account, rows, opening, output, *, allow_order_inference):
+def _transfer_evidence(case_id, transfer_ids, event_rows, locations, settlements):
+    """Attach original positions to a bounded readback of the solved transfers."""
+    from .services import trial_delayed_pair
+
+    links = []
+    resolved = db.q_raw("""select event_id,evidence_json,json_extract_string(evidence_json,'$.policy') as event_policy
+        from resolved_events where case_id=?
+        and event_id in (select unnest(?::varchar[])) order by event_id""", [case_id, transfer_ids])
+    for event in resolved:
+        key = event["event_id"]
+        observations = []
+        for flow_id in event_rows[key]:
+            row = locations[flow_id]
+            source = row["source_id"]
+            query = urlencode({"member_path": row["member_path"], "source_row": row["source_row"]})
+            observations.append({"flow_id": flow_id, "source_id": source, "sha256": row["sha256"],
+                                 "member_path": row["member_path"], "source_row": row["source_row"],
+                                 "record_url": f"/api/v1/cases/{case_id}/imports/{source}/records?{query}"})
+        link = {"event_id": key, "observations": observations}
+        if evidence := settlements.get(key):
+            link["clearing_original"] = evidence["witness"]
+            if scope := evidence.get("scope_witness"):
+                link["scope_statement"] = scope
+        elif event["event_policy"] == event_resolution.POLICY:
+            reference = event_resolution.validate_reference(event["evidence_json"])
+            if scope := trial_delayed_pair.same_instant_scope_witness(case_id, reference):
+                link["scope_statement"] = scope
+        links.append(link)
+    return links
+
+
+def _calculate_loaded(case_id, request, accounts, by_account, rows, opening, output, *,
+                      allow_order_inference, trial_originals=False):
     from . import principal_network
 
     def unknown(reason, status="unknown"):
@@ -117,7 +152,17 @@ def _calculate_loaded(case_id, request, accounts, by_account, rows, opening, out
                 return unknown("conflicting_event_evidence")
             internal = row["payer_account"] in accounts and row["payee_account"] in accounts
             if internal and member.get("status") != "confirmed":
-                return unknown("internal_transfer_requires_confirmed_opposite_ledgers")
+                pending = unknown("internal_transfer_requires_confirmed_opposite_ledgers")
+                if trial_originals:
+                    other = [key for key, entry in rows.items() if row["direction"] != entry["direction"]
+                             and all(row[field] == entry[field]
+                                     for field in ("payer_account", "payee_account", "amount"))]
+                    pending["internal_transfer_review"] = {
+                        "anchor_flow_id": row["id"], "opposite_flow_ids": other[:_TRANSFER_REVIEW_LIMIT],
+                        "more_opposite_rows": len(other) > _TRANSFER_REVIEW_LIMIT,
+                        "reason": "opposite_rows_unlinked" if other else "opposite_row_not_found",
+                    }
+                return pending
             key = member.get("event_id") if member.get("status") == "confirmed" else "flow:" + entry["id"]
             keys[entry["id"]] = key
             if key not in events:
@@ -132,6 +177,22 @@ def _calculate_loaded(case_id, request, accounts, by_account, rows, opening, out
             return unknown("internal_event_missing_own_entry")
     if len(events) > MAX_EVENTS:
         return unknown("network_event_resource_limit","limited")
+    transfers = [key for key, event in events.items() if event["payer"] is not None and event["payee"] is not None]
+    if trial_originals and transfers:
+        from .services import assistance, trace_review, trial_delayed_pair
+
+        locations = {str(row["flow_id"]): row for row in trace_review._locators(case_id, map(int, rows))}
+        registered = {row["source_id"]: row["sha256"] for row in locations.values()}
+        if locations.keys() != rows.keys() or assistance.verified_product_originals(case_id, registered) != registered.keys():
+            return unknown("network_originals_unavailable")
+        settlements = {}
+        for key in transfers:
+            first = event_rows[key][0]
+            if memberships[first]["reason"] == trial_delayed_pair.REASON:
+                settlement = trial_delayed_pair.review_proof(case_id, int(first))
+                if settlement is None:
+                    return unknown("network_originals_unavailable")
+                settlements[key] = settlement
     # Merge proved local orders. Tie-breaking is only between independent ready
     # events; shared-account ties have already been proved or rejected above.
     successors,indegree = defaultdict(set),dict.fromkeys(events,0)
@@ -170,6 +231,10 @@ def _calculate_loaded(case_id, request, accounts, by_account, rows, opening, out
     for target in result.get("targets",[]):
         event=events[target["id"]]
         target.update(flow_ids=event_rows[target["id"]],payer=event["payer"],payee=event["payee"])
+    if trial_originals and transfers and result.get("status") in {"ok", "determined"}:
+        output.update(internal_transfers=_transfer_evidence(case_id, transfers[:_TRANSFER_REVIEW_LIMIT], event_rows,
+                                                               locations, settlements),
+                      more_internal_transfers=len(transfers) > _TRANSFER_REVIEW_LIMIT)
     return {**output,**result,"ledger_count":len(rows),"event_count":len(events),
             "reasons": [result["reason"]] if result.get("reason") else [],
             "source_flow_id":request.source_flow_id,

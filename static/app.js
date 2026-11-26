@@ -234,6 +234,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   try {
     initWatermark();
     bindUI();
+    bindTrialLedgerLookup();
     installNeighborhood();
     installNodeFinder();
     initGraph();
@@ -570,6 +571,7 @@ function newGraphView(labelMode) {
     drawnNodes: 0, drawnEdges: 0, exportDepth: 0, amountWidths: null, recentNodeIds: new Set(), autoRoutes: {} };
 }
 function resetGraphView() {
+  updateGraphLedgerSummary();
   closeEdgeTraceDialog(false);
   state.graphView.openingFit?.cancel();
   cancelAnnotationDrag?.(); closeAnnotationEditor();
@@ -612,6 +614,14 @@ function activateCanvas(id) {
   state.graphInited = false;
   state.canvasId = id; state.canvasGeneration += 1; bindFeedback(); resetGraphView(); revokePhotoCrop(true);
   updateHeader(); updateGraphViewStatus();
+}
+function updateGraphLedgerSummary(summary, observationNote) {
+  const node = $('#graphLedgerSummary');
+  if (!node) return;
+  const count = summary?.count;
+  const text = count != null ? `账面往来 ${fmtCount(count)} 笔 · ${totalLabel(summary.amount_totals).replaceAll('\n', ' / ')}（${fmtCount(summary.observation_count)} 条原行，配对结算待核）`
+    : observationNote ? '同笔对应待核。画布保留两条来源观察，金额为原额合计。' : '';
+  if (node.textContent !== text) node.textContent = text;
 }
 function graphMetric(phase, extra = {}) {
   syncMinimapNavigation();
@@ -3011,7 +3021,10 @@ function edgeLabel(e) {
   if (e.kind === 'source_ledger') return '';
   const lines = [];
   const s = state.edgeLabels;
-  if (s.has('money') && (e.cnt != null || e.total != null || e.amount_totals?.some(item => item.amount != null))) lines.push(`${fundsCount(e.funds, e.cnt).replace(/ /g, '')}·${totalLabel(e.amount_totals, e.total, e.currencies?.[0])}`);
+  const pendingPair = Boolean(e.source_observation_notice);
+  const count = fundsCount(e.funds, e.cnt).replace(/ /g, '');
+  const countLabel = pendingPair ? `${count}（同笔待核）` : count;
+  if (s.has('money') && (e.cnt != null || e.total != null || e.amount_totals?.some(item => item.amount != null))) lines.push(`${countLabel}·${pendingPair ? '原额合计' : ''}${totalLabel(e.amount_totals, e.total, e.currencies?.[0])}`);
   else if (s.has('currency') && e.currencies?.length) lines.push(e.currencies.join(' / '));
   if (s.has('summary')) {
     const summaries=e.summaries || [], full=summaries.slice(0,2).join(' / '), chars=Array.from(full);
@@ -3022,7 +3035,7 @@ function edgeLabel(e) {
     const t = fmtEdgeSpan(e.tmin, e.tmax);
     if (t) lines.push(t);
   }
-  return lines.join('\n') || (e.cnt == null ? '' : fundsCount(e.funds, e.cnt).replace(/ /g, ''));
+  return lines.join('\n') || (e.cnt == null ? '' : countLabel);
 }
 
 function renderGraph(rebinding = null) {
@@ -3069,6 +3082,7 @@ function renderGraph(rebinding = null) {
   const filtered = typeof FundsGraphPresentation !== 'undefined'
     ? FundsGraphPresentation.displayData(scoped, state.presentation) : scoped;
   const g = window.FundsInvestigation?.scopeGraph?.(filtered, projected) || filtered;
+  updateGraphLedgerSummary(g.ledger_summary, g.edges.some(edge => edge.source_observation_notice));
   view.index = projected!==full || view.visibleIds || graphViewIsFiltered() ? FundsGraphView.createIndex(g)
     : (view.fullIndex || FundsGraphView.createIndex(g));
   view.amountWidths = typeof FundsGraphRelations !== 'undefined' && state.presentation.amountWidth.enabled
@@ -4619,7 +4633,8 @@ async function showEdgeDrawer(model, item) {
   const displayAccount = account => (state.lastGraph?.nodes || []).find(node => String(node.account) === String(account))?.display_account || account;
   const start = fmtTime(data.tmin), end = fmtTime(data.tmax);
   const span = start && end ? `${start} — ${start.slice(0, 10) === end.slice(0, 10) ? end.slice(11) : end}` : start || end || '—';
-  const totals = `<span>${fundsTotalHtml(data.funds, data.amount_totals, data.total, data.currencies?.[0])}</span>`;
+  const amountBasis = data.source_observation_notice ? '<span>同笔待核，金额为所选原行合计</span>' : '';
+  const totals = `${amountBasis}<span>${fundsTotalHtml(data.funds, data.amount_totals, data.total, data.currencies?.[0])}</span>`;
   const workspace = edgeWorkspace = { context: caseContext(), sequence: ++drawerSequence, view,
     revision: view.revision, key: edgeKey(model), data, ids: [...(model.ids || data.ids || [])],
     source: String(model.source), target: String(model.target),
@@ -4754,12 +4769,16 @@ function revokeContext(context, token) {
 }
 
 function closeContext() {
-  revokeContext(state.ctx?.context, state.ctx?.data?.review?.token);
-  if (state.ctx) state.ctx = { ...state.ctx, closed: true, phase: 'closed', data: null, detail: null, submission: null };
+  const previous = state.ctx;
+  previous?.modelTrialRequest?.abort();
+  stopContextExplanations(previous);
+  if (previous) state.ctx = { ...previous, closed: true, phase: 'closed', data: null, detail: null,
+    fieldReceipt: null, submission: null };
   $('#ctxModal').style.display = 'none';
   $('#ctxTbody').innerHTML = ''; $('#ctxSuggest').innerHTML = '';
   $('#ctxDetailContent').innerHTML = ''; $('#ctxTrackStatus').textContent = '';
   syncContextSelection();
+  revokeContext(previous?.context, previous?.data?.review?.token);
 }
 
 function contextTimeBound(value, end) {
@@ -4824,10 +4843,10 @@ function syncContextSelection() {
   contextTableScroll?.sync();
 }
 
-async function openContext(flowId, edge = null, parentEdge = null) {
-  revokeContext(state.ctx?.context, state.ctx?.data?.review?.token);
+async function openContext(flowId, edge = null, parentEdge = null, ledgerBinding = null) {
+  const previous = state.ctx;
   const x = Math.max(1, Math.min(50, Math.floor(Number($('#ctxX').value) || 5)));
-  state.ctx = { flowId, edge, parentEdge, x, mode: 'all', start: '', end: '', cards: { payer: new Set(), payee: new Set() },
+  state.ctx = { flowId, edge, parentEdge, ledgerBinding, x, mode: 'all', start: '', end: '', cards: { payer: new Set(), payee: new Set() },
     lineOptions: { dual: true, time: false, remark: false, summary: false, format: 'short' },
     phase: 'loading', closed: false };
   $('#ctxX').value = x; $('#ctxStart').value = ''; $('#ctxEnd').value = '';
@@ -4841,20 +4860,24 @@ async function openContext(flowId, edge = null, parentEdge = null) {
   }
   $('#ctxTableScroll').scrollLeft = 0; $('#ctxTableScroll').scrollTop = 0;
   $('#ctxModal').style.display = 'flex';
+  revokeContext(previous?.context, previous?.data?.review?.token);
   await loadContext();
 }
 
 async function loadContext() {
   if (!state.ctx || state.ctx.closed || state.ctx.phase === 'tracking') return;
-  const context = caseContext(), request = state.ctx;
-  revokeContext(request.context, request.data?.review?.token);
-  Object.assign(request, { context, phase: 'loading', data: null, clue: null, detail: null });
+  const context = caseContext(), request = state.ctx, load = {};
+  const previous = request.context, previousToken = request.data?.review?.token;
+  request.modelTrialRequest?.abort();
+  stopContextExplanations(request);
+  Object.assign(request, { context, load, phase: 'loading', data: null, clue: null, detail: null, fieldReceipt: null });
   $('#ctxBody').hidden = false; $('#ctxDetail').hidden = true; $('#ctxDetailContent').innerHTML = '';
   $('#ctxTrackStatus').textContent = '';
   $('#ctxPos').textContent = '正在读取流水…';
   $('#ctxTbody').innerHTML = `<tr><td colspan="${contextColumns}" class="context-empty" role="status">正在读取流水…</td></tr>`;
   $('#ctxSuggest').innerHTML = '';
   syncContextSelection();
+  revokeContext(previous, previousToken);
   let value;
   if (request.edge) {
     if (!contextEdgeIsCurrent(request)) throw new Error('图谱已更新，请重新打开追踪核对');
@@ -4866,7 +4889,7 @@ async function loadContext() {
     value = await api(`/api/context/${encodeURIComponent(request.flowId)}?review=true&x=${request.x}&${contextQuery(context)}`);
   }
   const token = value?.review?.token;
-  if (!contextIsCurrent(request, context)) { revokeContext(context, token); return; }
+  if (!contextIsCurrent(request, context) || request.load !== load) { revokeContext(context, token); return; }
   if (!contextEdgeIsCurrent(request)) { revokeContext(context, token); throw new Error('图谱已更新，请重新打开追踪核对'); }
   if (!value?.anchor || !Array.isArray(value.rows) || !token) throw new Error('流水核对格式无效');
   request.data = value; request.phase = 'ready';
@@ -4887,12 +4910,16 @@ function contextLineTime(times, format) {
 
 function contextFundsMarkup(directions, options = {}, aggregate = true) {
   const line = (direction, description) => {
-    const funds = directions?.[direction], meta = directions?.annotations?.[direction];
+    const booked = directions?.booked?.[direction], meta = directions?.annotations?.[direction];
+    const countLabel = booked ? `${fmtCount(booked.cnt)} 笔` : '—';
+    const amountLabel = booked?.amount_totals.map(total => total.amount != null && total.currency
+      ? moneyLabel(total.amount, total.currency) : '—').join(' / ')
+      || booked?.total || '—';
     const time = options.time ? `<small>${esc(contextLineTime(meta?.times, options.format))}</small>` : '';
     const remark = options.remark ? `<small>备注 ${esc(meta?.remarks?.join(' / ') || '—')}</small>` : '';
     const summary = options.summary ? `<small>摘要 ${esc(meta?.summaries?.join(' / ') || '—')}</small>` : '';
     return `<span class="context-fund-line ${direction}">
-      <span class="context-line-caption"><b><span class="sr-only">${description}</span>${esc(window.FundsFacts?.displayCount(funds) || '笔数待核')} <span>${esc(window.FundsFacts?.displayTotals(funds) || '金额待核')}</span></b>
+      <span class="context-line-caption"><b><span class="sr-only">${description}账面流水 </span>${esc(countLabel)} <span>${esc(amountLabel)}</span></b>
       ${time}${remark}${summary}</span><span class="context-line" aria-hidden="true"></span></span>`;
   };
   return line('forward', '左侧至右侧') + (aggregate && options.dual !== false ? line('reverse', '右侧至左侧') : '');
@@ -5016,41 +5043,108 @@ function renderContext() {
   syncContextSelection();
 }
 
+function recordedDestinationMarkup(value, visible) {
+  if (!value) return '';
+  const { debit, bridges, other_credits: other, currency } = value;
+  const ids = [debit.id, ...bridges.flatMap(item => [item.payer_id, item.receiver_id]), ...other.map(item => item.id)];
+  if (ids.some(id => !visible.has(id))) return '';
+  const original = (label, id) => `<button type="button" class="btn small" data-destination-original="${esc(id)}">${esc(label)}</button>`;
+  const sources = bridges.map(item => `<li>${original(`付款原行 ${item.payer_row}`, item.payer_id)}
+    → ${original(`接收原行 ${item.receiver_row}`, item.receiver_id)}，单独至多承接 ${moneyHtml(item.upper, currency)}。</li>`);
+  const alternatives = other.length ? `<p>期间另有入账 ${other.map(item => original(`原行 ${item.source_row}`, item.id)).join(' ')}</p>` : '';
+  return `<section>
+    <h4>账面去向</h4>
+    <p>同一来源表区内，接收账 ${esc(value.receiver_account)} 按原报时钟严格在后最早的已记录支出为
+      ${original(`支出原行 ${debit.source_row}`, debit.id)}，金额 ${moneyHtml(debit.amount, currency)}。
+      第 ${esc(debit.counterparty_column)} 列原报对手账卡号 ${esc(debit.counterparty)}。</p>
+    <p>若所涉记录有效且原交易时钟反映资金可用先后，所选来源合计至多承接 ${moneyHtml(value.joint_upper, currency)}。</p>
+    <ul>${sources.join('')}</ul>${alternatives}
+    <p>这笔支出的金额只计一次。实际资金份额和交易结算待核。</p>
+  </section>`;
+}
+
+function reportedDestinationMarkup(value, visible) {
+  if (!value) return '';
+  const { anchor, debit, other_credits: credits, conditional_upper: upper } = value;
+  if ([anchor, debit, ...credits].some(row => !visible.has(row.id))) return '';
+  const original = (label, row) => `<button type="button" class="btn small" data-destination-original="${esc(row.id)}">${esc(label)} ${esc(row.source_row)}</button>`;
+  const { counterparty_account: account, counterparty_name: name } = debit;
+  return `<section>
+    <h4>原表记载的下一笔出账</h4>
+    <p>在原表第 ${esc(value.first_row)} 至 ${esc(value.last_row)} 行内，按第 ${esc(value.clock_column)} 列的原报交易时间，
+    ${original('所选入账原行', anchor)}之后，同账同币最早的已记录出账见${original('出账原行', debit)}。</p>
+    <p>第 ${esc(account.column)} 列的原报对端账号 ${esc(account.value)} 与本方账号同值。
+    ${name ? `第 ${esc(name.column)} 列的原报对端户名为 ${esc(name.value)}。` : ''}</p>
+    ${credits.length ? `<p>同期另有原表入账 ${credits.map(row => original('入账原行', row)).join(' ')}</p>` : ''}
+    ${upper ? `<p>若入账和出账均实际有效、原报时钟反映资金可用先后，且两个金额采用同一币种与单位，
+      所选入账对这笔出账最多可解释 ${moneyHtml(upper.amount, upper.currency)}。
+      ${upper.header_declares_unit ? '' : `第 ${esc(upper.amount_column)} 列表头未标单位，金额按当前导入使用的基础单位计算。`}</p>` : ''}
+    <p>实际对端身份、结算和本金归属待核。</p>
+  </section>`;
+}
+
 function renderSuggestions(rows) {
   const wrap = $('#ctxSuggest'), selection = state.ctx, context = selection.context;
+  stopContextExplanations(selection);
   const visible = new Set(rows.map(row => String(row.id))), suggestions = selection.data.suggestions || {};
   const anchorScope = selection.mode === 'all' ? visible : new Set(
     visibleContextRows({ ...selection, mode: 'all' }).map(row => String(row.id)));
   const completeWindow = anchorScope.size === selection.data.rows.length;
   const ref = selection.data.review.reference;
+  const recorded = selection.mode === 'source' ? '' :
+    recordedDestinationMarkup(selection.data.review.recorded_destination, anchorScope)
+    || reportedDestinationMarkup(selection.data.review.reported_destination, anchorScope);
   const describeLocation = item => `${item.filename} · ${item.sheet || item.member_path} · 原行 ${item.source_row}`;
-  const group = (role, title, note) => {
+  const checkNames = { ledger_roles: '收付角色', currency_amount: '同币金额', order: '时序',
+    own_balance: '本方余额', adjacent_balances: '对侧余额', interval_records: '区间流水' };
+  const group = (role, title) => {
     const list = (suggestions[role + 's'] || []).map((item, index) => {
       const ids = (item.ids || []).map(String).filter(id => visible.has(id));
       const complete = ids.length === item.ids.length && (item.anchor_ids || []).every(id => anchorScope.has(String(id)));
-      const judgment = complete ? item.evidence?.judgment || '现有证据仍需核对本金归属。' :
-        ids.length ? `当前范围可定位 ${ids.length} 条关联流水，本金归属待核。` : '当前范围没有对应流水。';
+      const scopeNotice = complete ? '' : ids.length ? '筛选后只显示部分相关流水。' : '当前范围没有对应流水。';
       const basis = complete ? item.evidence?.basis : '';
       const locations = complete ? (item.evidence?.locations || []).slice(0, 2).map(describeLocation) : [];
+      const checks = complete && item.score != null ? Object.entries(item.evidence?.checks || {}) : [];
+      const gaps = checks.filter(([name, passed]) => !passed && checkNames[name]).map(([name]) => checkNames[name]);
+      const scoreNote = checks.length ? ` 核对通过 ${checks.filter(([, passed]) => passed).length}/${checks.length} 项${gaps.length ? `，待核${gaps.join('、')}` : ''}。` : '';
+      const receipt = selection.fieldReceipt;
+      const fieldCheck = receipt && ids.includes(receipt.flow_id)
+        ? `<span class="sg-field-receipt">${esc(contextFieldReviewLabel(receipt))}</span>` : '';
+      const description = `ctx-clue-${role}-${index}`;
       return `<div class="sg-entry"><button class="sg-item" type="button" data-key="${role}-${index}" data-ids="${esc(ids.join(','))}"
-        aria-pressed="false"><span class="sg-main"><b>${esc(item.name || '未提供户名')}</b></span>
-        <span class="sg-score" title="账簿证据核对分"><span class="sr-only">证据评分 </span><b>${esc(complete ? item.score ?? '—' : '—')}</b></span>
-        <span class="sg-basis">${role === 'source' ? '转入 ' : '转出 '}${esc(contextAccount(selection.data.anchor, role === 'source' ? 'payer' : 'payee'))}${complete && item.total != null ? ` · ${fmtCount(item.cnt)} 条合计 ${moneyHtml(item.total, item.currency)}` : ''}</span>
-        <span class="sg-judgment">${esc(judgment)}</span>
-        <span class="sg-evidence" hidden>${esc(basis || '可回查高亮的原始记录。')}${locations.length ? `<br>${esc(locations.join('；'))}` : ''}</span></button></div>`;
+        aria-pressed="false" aria-describedby="${description}"><span class="sg-main"><b>${esc(item.name || '未提供户名')}</b></span>
+        <span class="sg-score"><span class="sr-only">证据评分 </span><b>${esc(complete && item.score != null ? `${item.score}/100` : '—')}</b></span>
+        <span class="sg-basis">${role === 'source' ? '转入 ' : '转出 '}${esc(contextAccount(selection.data.anchor, role === 'source' ? 'payer' : 'payee'))}${complete && item.total != null ? ` · ${fmtCount(item.cnt)} 笔 ${moneyHtml(item.total, item.currency)}` : ''}</span>
+        <span class="sg-evidence" hidden>${esc((basis || '可回查高亮的原始记录。') + scoreNote)}${locations.length ? `<br>${esc(locations.join('；'))}` : ''}
+        ${fieldCheck}</span></button>
+        <p id="${description}" class="sg-judgment" role="status">${esc(scopeNotice)}</p></div>`;
     }).join('');
-    return `<section class="sgroup"><h3 class="sg-title">${title}${note ? `<span>${note}</span>` : ''}</h3>
-      <div class="sg-items" tabindex="0" role="region" aria-label="${title}列表">${list || `<p class="sg-empty">${selection.edge && !ref ? '在明细中选择「以此笔追踪」' : '暂无可定位线索'}</p>`}</div></section>`;
+    const empty = selection.edge && !ref ? '在明细中选择「以此笔追踪」'
+      : completeWindow && selection.data.review.principal?.[role]?.reasons?.includes('own_ledger_anchor_missing')
+        ? `缺少可核实的${role === 'source' ? '付款方' : '收款方'}本方账簿。` : '当前范围没有相应流水。';
+    const absence = role === 'target' && !recorded && !list && completeWindow && selection.mode !== 'source'
+      ? selection.data.review.recorded_destination_absence : null;
+    const scoped = absence && anchorScope.has(String(selection.data.anchor.id)) ? `<section>
+      <p>原表第 ${esc(absence.first_row)} 至 ${esc(absence.last_row)} 行已查阅。
+      依同一本方账簿、同币种和第 ${esc(absence.clock_column)} 列原报交易时间核对 ${esc(absence.matching_rows)} 条原行，
+      在此范围内未找到本笔之后的已记录出账。账期覆盖和实际资金归属仍待核。</p>
+      <button type="button" class="btn small" data-destination-original="${esc(selection.data.anchor.id)}">查看原第 ${esc(absence.anchor_row)} 行</button>
+    </section>` : '';
+    const observed = role === 'target' ? recorded || scoped : '';
+    return `<section class="sgroup"><h3 class="sg-title">${title}</h3>
+      <div class="sg-items" tabindex="0" role="region" aria-label="${title}列表">${observed}${list || (observed ? '' : `<p class="sg-empty">${empty}</p>`)}</div></section>`;
   };
-  const principal = selection.data.review.principal || {};
-  // This assessment was calculated for the original review window. A local
-  // filter cannot narrow its amounts or evidence without a new calculation.
-  const explanation = completeWindow ? Object.values(principal).map(value => window.FundsFacts?.principal(value)).filter(Boolean) : [];
-  const refLabel = completeWindow && ref?.trade_time ? `参考 ${esc(fmtTime(ref.trade_time).slice(11, 16))} · ${moneyHtml(ref.amount, ref.currency)}` : '';
-  wrap.innerHTML = group('source', '疑似来源', refLabel) + group('target', '疑似去向', '')
-    + (explanation.length ? `<details class="context-score-note"><summary>账面条件及待核事项</summary>
-      ${explanation.map(note => `<p>${esc(note).replaceAll('\n', '<br>')}</p>`).join('')}</details>` : '');
-  wrap.querySelectorAll('.sg-item').forEach(button => {
+  wrap.innerHTML = group('source', '来源') + group('target', '去向');
+  wrap.querySelectorAll('[data-destination-original]').forEach(button => {
+    button.onclick = () => {
+      if (contextIsCurrent(selection, context) && contextEdgeIsCurrent(selection) && selection.phase === 'ready' && button.isConnected) {
+        void openContextRecord(button.dataset.destinationOriginal, button);
+      }
+    };
+  });
+  const buttons = wrap.querySelectorAll('.sg-item');
+  const explain = completeWindow ? bindContextExplanations(selection, buttons, suggestions) : null;
+  buttons.forEach(button => {
     button.onclick = () => {
       if (!contextIsCurrent(selection, context) || !contextEdgeIsCurrent(selection)
         || selection.phase !== 'ready' || !button.isConnected || button.disabled) return;
@@ -5063,8 +5157,593 @@ function renderSuggestions(rows) {
       if (row?.getBoundingClientRect && header) {
         viewport.scrollTop += row.getBoundingClientRect().top - viewport.getBoundingClientRect().top - header.offsetHeight;
       }
+      if (selection.clue) explain?.(button, true);
     };
   });
+}
+
+let modelTrialCapability;
+let trialLedgerLookupRequest;
+
+function contextModelTrialStatus() {
+  modelTrialCapability ??= fetch('/api/v1/model-trial/status')
+    .then(response => response.ok ? response.json() : null).catch(() => null);
+  return modelTrialCapability;
+}
+
+async function trialEnabled() {
+  return (await contextModelTrialStatus())?.enabled === true;
+}
+
+async function requestContextTrial(selection, body, signal) {
+  const { caseId } = selection.context;
+  const response = await fetch(`/api/v1/cases/${encodeURIComponent(caseId)}/review-model-trial`,
+    { method: 'POST', ...jsonOpts(body), signal });
+  const value = await response.json();
+  if (!response.ok) {
+    throw Object.assign(new Error(value.error?.message || '本机复核暂不可用。'), { status: response.status });
+  }
+  const facts = value.packet.facts;
+  if (String(facts.case_id) !== String(caseId) || facts.kind !== body.kind
+    || facts.revision !== selection.data.analysis_revision || facts.anchor_id !== (body.anchor_id ?? null)
+    || (facts.group_flow_id ?? null) !== (body.group_flow_id ?? null)
+    || JSON.stringify(facts.group_flow_ids ?? []) !== JSON.stringify(body.group_flow_ids ?? [])
+    || JSON.stringify(facts.selected_source_flow_ids ?? []) !== JSON.stringify(body.source_flow_ids ?? [])
+    || JSON.stringify(facts.selected_target_flow_ids ?? []) !== JSON.stringify(body.target_flow_ids ?? [])
+    || (facts.ledger_scope_id ?? null) !== (body.ledger_binding?.scope_id ?? null)
+    || String(facts.canvas_id ?? 0) !== body.canvas_id) throw new Error('核对范围已变化，请重新打开。');
+  return value;
+}
+
+function stopContextExplanations(selection) {
+  const batch = selection?.explanationBatch;
+  if (!batch) return;
+  batch.observer?.disconnect();
+  batch.controller.abort();
+  selection.explanationBatch = null;
+}
+
+function bindContextExplanations(selection, buttons, suggestions) {
+  if (!window.FundsDesktopPreferences || !buttons.length || !selection.data.review.token) return null;
+  const batch = { controller: new AbortController(), observer: null };
+  selection.explanationBatch = batch;
+  const { context, load } = selection, reviewToken = selection.data.review.token;
+  const completed = selection.clueReviews ??= new Map();
+  const queued = new Map(), visible = new Set();
+  let queue = Promise.resolve();
+  const current = button => button.isConnected && contextIsCurrent(selection, context) && contextEdgeIsCurrent(selection)
+    && selection.phase === 'ready' && selection.load === load && selection.data.review.token === reviewToken
+    && selection.explanationBatch === batch && !batch.controller.signal.aborted;
+  const schedule = (button, selected = false) => {
+    if (!current(button)) return;
+    const [role, index] = button.dataset.key.split('-');
+    const clue = suggestions[role + 's']?.[Number(index)];
+    if (!clue?.ids?.length || !button.dataset.ids || button.dataset.ids.split(',').length !== clue.ids.length) return;
+    const identity = JSON.stringify([reviewToken, role, clue.ids, selection.ledgerBinding ?? null]);
+    const output = button.parentElement.querySelector('.sg-judgment');
+    if (completed.has(identity)) {
+      output.textContent = completed.get(identity);
+      return;
+    }
+    if (queued.has(identity)) {
+      if (selected) queued.set(identity, true);
+      return;
+    }
+    queued.set(identity, selected);
+    queue = queue.then(async () => {
+      const status = await contextModelTrialStatus();
+      if (!status?.enabled || !status.configured || !current(button) || !queued.get(identity) && !visible.has(button)) return;
+      const body = { kind: 'trace_' + role, explain: true, review_token: reviewToken, canvas_id: String(context.canvasId || 0),
+        group_flow_id: String(clue.ids[0]), ...(selection.edge ? {} : { anchor_id: String(selection.flowId) }),
+        ...(selection.ledgerBinding ? { ledger_binding: selection.ledgerBinding } : {}) };
+      const value = await requestContextTrial(selection, body, batch.controller.signal);
+      if (!current(button)) return;
+      if (value.explanation_model === 'qwen35-4b' && value.explanation_calls > 0 && value.explanation) {
+        completed.set(identity, value.explanation);
+        output.textContent = value.explanation;
+      } else {
+        output.textContent = '说明暂未通过核对。';
+      }
+    }).catch(() => {
+      if (current(button)) output.textContent = '说明暂不可用。';
+    }).finally(() => { queued.delete(identity); });
+  };
+  if (typeof IntersectionObserver === 'function') {
+    batch.observer = new IntersectionObserver(entries => {
+      for (const { target, isIntersecting, intersectionRatio } of entries) {
+        if (isIntersecting && intersectionRatio >= 0.5) {
+          visible.add(target);
+          schedule(target);
+        } else visible.delete(target);
+      }
+    }, { threshold: 0.5 });
+    buttons.forEach(button => batch.observer.observe(button));
+  }
+  return schedule;
+}
+
+function resetTrialLedgerLookup(resetFields = true) {
+  trialLedgerLookupRequest?.abort();
+  trialLedgerLookupRequest = null;
+  if (resetFields) $('#trialLedgerForm')?.reset?.();
+  const button = $('#trialLedgerForm button[type=submit]');
+  if (button) button.disabled = false;
+  const status = $('#trialLedgerStatus');
+  if (status) status.textContent = '';
+  $('#trialLedgerResults')?.replaceChildren?.();
+}
+
+function bindTrialLedgerLookup() {
+  const section = $('#trialLedgerLookup'), form = $('#trialLedgerForm');
+  if (!section || !form || !window.FundsDesktopPreferences) return;
+  let generation = caseContext().generation;
+  window.addEventListener('funds:feedback-binding', event => {
+    if (event.detail.generation === generation) return;
+    generation = event.detail.generation;
+    resetTrialLedgerLookup();
+  });
+  void trialEnabled().then(enabled => { section.hidden = !enabled; });
+  const status = $('#trialLedgerStatus'), output = $('#trialLedgerResults'), submit = form.querySelector('button[type=submit]');
+  form.onsubmit = async event => {
+    event.preventDefault();
+    const context = caseContext(), lookup = Object.fromEntries(new FormData(form));
+    const url = `/api/v1/cases/${encodeURIComponent(context.caseId)}/trace-ledgers`;
+    form.action = url;
+    trialLedgerLookupRequest?.abort();
+    const controller = new AbortController();
+    trialLedgerLookupRequest = controller;
+    const live = () => isCurrentCase(context, false) && trialLedgerLookupRequest === controller && !controller.signal.aborted;
+    output.replaceChildren(); status.textContent = '正在回查本案账簿登记…'; submit.disabled = true;
+    try {
+      const response = await fetch(url, { method: 'POST', ...jsonOpts(lookup), signal: controller.signal });
+      const data = await response.json();
+      if (!live()) return;
+      if (!response.ok) { status.textContent = data.error?.message || '账簿查询未完成。'; return; }
+      if (String(data.case_id) !== String(context.caseId)) return;
+      const labels = {found: '已查到有登记原据的账簿。', multiple_ledgers: '有多个登记，请选择实际要查的账簿。',
+        scope_limited: '登记原件范围未查全，留待核。', evidence_missing: '缺少该卡号或户名的有效账簿登记。',
+        period_unproved: '原件未证明所选完整期间的账簿关系。', book_unavailable: '已找到登记，该期间尚无对应原账流水。',
+        partial_card: '卡号不完整，请输入登记原件中的完整卡号。'};
+      status.textContent = labels[data.status] || '账簿关系待核。';
+      const observations = data.source_observations;
+      if (observations) {
+        for (const match of observations.matches) {
+          if (!/^[0-9a-f]{32}$/.test(match.source_id)) continue;
+          const branch = document.createElement('details'), title = document.createElement('summary');
+          branch.open = true;
+          const snapshot = match.role === 'account_snapshot';
+          const accountScope = match.account_column
+            ? `，原卡号第 ${match.card_column} 列、原账号第 ${match.account_column} 列` : '';
+          title.textContent = snapshot ? `开户资料 · ${match.matching_rows} 条原行`
+            : match.role === 'matching_card_account' ? `卡号和账号均相符 · ${match.matching_rows} 条流水原行`
+            : match.role === 'matching_registered_account' ? `同开户资料账号与币种 · ${match.matching_rows} 条流水原行${match.rows_without_full_card ? `，其中 ${match.rows_without_full_card} 行缺完整本方卡号` : ''}`
+            : match.role === 'query_name'
+            ? `查询姓名列命中 ${match.matching_rows} 条原行，涉及 ${match.distinct_cards} 个本方卡号${match.rows_without_full_card ? `，其中 ${match.rows_without_full_card} 行缺完整卡号` : ''}`
+            : `本方卡号列命中 ${match.matching_rows} 条原行`;
+          if (match.distinct_accounts > 1) title.textContent += `，涉及 ${match.distinct_accounts} 个原账号`;
+          const scope = document.createElement('p'), original = document.createElement('a');
+          const scopeTitle = snapshot ? '关系有效期待核' : match.account_column ? '所查日期内的原流水' : '所选期间';
+          scope.textContent = `${scopeTitle} · 表头第 ${match.header_row} 行第 ${match.match_column} 列${accountScope || (match.role === 'query_name' ? `，本方卡号第 ${match.card_column} 列` : '')} · `;
+          original.href = `/api/v1/cases/${encodeURIComponent(context.caseId)}/sources/${encodeURIComponent(match.source_id)}/member-file?${new URLSearchParams({ member_path: match.member_path })}`;
+          original.download = ''; original.textContent = match.account_column ? '查看来源原件' : '查看来源工作簿';
+          scope.append(original); branch.append(title, scope);
+          const examples = document.createElement('ul');
+          for (const row of match.examples) {
+            const item = document.createElement('li');
+            const label = [`原始第 ${row.source_row} 行`,
+              (match.role === 'query_name' || accountScope) && row.card_suffix && `卡号尾号 ${row.card_suffix}`,
+              row.account && `原账号 ${row.account}`,
+              row.card_equals_account && '开户资料的卡号和账号原值相同',
+              row.clock, row.direction === 'in' ? '入账' : row.direction === 'out' ? '出账' : ''].filter(Boolean).join(' · ');
+            if (/^[1-9][0-9]*$/.test(row.flow_id ?? '')) {
+              const button = document.createElement('button');
+              button.type = 'button'; button.className = 'btn small'; button.textContent = label;
+              button.onclick = () => live() && openContext(row.flow_id);
+              item.append(button);
+            } else item.textContent = label;
+            examples.append(item);
+          }
+          branch.append(examples);
+          if (snapshot && match.registration_columns) {
+            const cols = match.registration_columns, note = document.createElement('p');
+            note.textContent = `第 ${cols.opening}、${cols.closing}、${cols.last_transaction} 列各记开户、销户及最后交易时间。交易时的卡账适用关系待核。`;
+            branch.append(note);
+          }
+          if (match.account_column && match.matching_rows > match.examples.length) {
+            const sample = document.createElement('p');
+            sample.textContent = `当前列出 ${match.examples.length} 条原行，其余可查来源原件。`;
+            branch.append(sample);
+          }
+          output.append(branch);
+        }
+        if (!observations.complete) {
+          const note = document.createElement('p');
+          note.textContent = '原件查找范围未查全，以上为已核位置。';
+          output.append(note);
+        }
+      }
+      for (const choice of data.choices) {
+        const branch = document.createElement('details'), title = document.createElement('summary');
+        title.textContent = `${choice.name} · ${choice.issuer} · ${choice.account}`;
+        branch.append(title);
+        for (const proof of choice.proofs) {
+          const origin = document.createElement('p'), link = document.createElement('a');
+          origin.textContent = `${proof.member_path} · 原行 ${proof.source_row} · ${proof.valid_from} 至 ${proof.valid_until} · `;
+          link.href = `/api/v1/cases/${encodeURIComponent(context.caseId)}/sources/${encodeURIComponent(proof.source_id)}/member-file?${new URLSearchParams({ member_path: proof.member_path })}`;
+          link.download = ''; link.textContent = '下载登记原件';
+          origin.append(link); branch.append(origin);
+        }
+        if (data.coverage_complete && choice.covers_period) {
+          for (const row of choice.rows) {
+            const button = document.createElement('button');
+            button.type = 'button'; button.className = 'btn small';
+            button.textContent = `${row.clock} · ${row.direction === 'out' ? '出账' : '入账'} ${row.currency} ${row.amount}`;
+            button.onclick = () => live() && openContext(row.id, null, null, { lookup, scope_id: choice.scope_id });
+            branch.append(button);
+          }
+        }
+        output.append(branch);
+      }
+    } catch (error) {
+      if (live()) status.textContent = '账簿查询未完成，请重新读取。';
+    } finally {
+      if (live()) submit.disabled = false;
+    }
+  };
+  form.oninput = () => {
+    trialLedgerLookupRequest?.abort();
+    output.replaceChildren(); status.textContent = ''; submit.disabled = false;
+  };
+}
+
+function readContextRecord(selection, id, signal) {
+  const anchor = encodeURIComponent(selection.flowId ?? 0);
+  return api(`/api/context/${anchor}/record/${encodeURIComponent(id)}?${contextQuery(selection.context)}`,
+    { signal, headers: { 'X-FundsTrace-Review': selection.data.review.token } });
+}
+
+function contextOriginalMarkup(original) {
+  return `<article>
+    <p>${esc(original.filename)} · ${esc(original.sheet || original.member_path)} · 原行 ${esc(original.source_row)}</p>
+    ${original.download_url ? `<a class="btn small" href="${esc(original.download_url)}" download>查看原件</a>` : ''}
+    <dl>${(original.cells || []).map(cell => `<dt>${esc(cell.header)}</dt><dd>${esc(cell.value || '—')}</dd>`).join('')}</dl></article>`;
+}
+
+function renderContextModelTrial(wrap, selection, detail) {
+  if (!window.FundsDesktopPreferences || !selection.data.review?.token) return;
+  const completeWindow = visibleContextRows({ ...selection, mode: 'all' }).length === selection.data.rows.length;
+  if (!completeWindow || (!selection.edge && detail.id !== String(selection.flowId))) return;
+  const context = selection.context, review = selection.data.review, load = selection.load;
+  const choices = selection.edge ? [] : [{ kind: 'pair', label: '同笔候选' }];
+  const singleClues = [];
+  for (const direction of ['source', 'target']) {
+    const items = selection.data.suggestions?.[direction + 's'] || [];
+    const name = direction === 'source' ? '来源' : '去向';
+    const grouped = [...new Set(items.flatMap(item => (item.ids || []).map(String)))];
+    if (items.length > 1 && grouped.length <= 50)
+      choices.push({ kind: 'trace_' + direction, group_flow_ids: grouped, label: `合并核证当前 ${grouped.length} 笔${name}` });
+    if (!selection.edge) items.forEach((clue, index) => {
+      if (clue.ids?.length === 1 && clue.anchor_ids?.length === 1) {
+        singleClues.push({ kind: 'trace_' + direction, group_flow_id: String(clue.ids[0]),
+          label: `核对第 ${index + 1} 项${name}线索` });
+      }
+    });
+  }
+  const anchor = selection.data.anchor;
+  const jointRows = [...new Map([anchor, ...(selection.data.rows || [])].filter(row =>
+    row?.id && anchor?.self_account && row.self_account === anchor.self_account
+    && ((row.payer_account === anchor.self_account) !== (row.payee_account === anchor.self_account)))
+    .map(row => [String(row.id), row])).values()];
+  const incoming = jointRows.filter(row => row.payee_account === anchor.self_account);
+  const outgoing = jointRows.filter(row => row.payer_account === anchor.self_account);
+  if (!selection.edge && incoming.length && outgoing.length && jointRows.length > 2) {
+    const kind = anchor.payer_account === anchor.self_account ? 'trace_source' : 'trace_target';
+    choices.push({ kind, joint: true, label: '合并核证所选入账与出账' });
+  }
+  choices.push(...singleClues);
+  if (!choices.length) return;
+  const section = document.createElement('details');
+  section.className = 'context-review-actions';
+  section.hidden = true;
+  const title = document.createElement('summary');
+  title.textContent = '同笔与组合核证';
+  const label = document.createElement('label'), picker = document.createElement('select');
+  label.textContent = '核对事项 ';
+  choices.forEach((choice, index) => {
+    const option = document.createElement('option');
+    option.value = String(index); option.textContent = choice.label; picker.append(option);
+  });
+  label.append(picker);
+  const button = document.createElement('button'), status = document.createElement('p'), result = document.createElement('div');
+  button.className = 'btn small';
+  button.type = 'button';
+  button.textContent = '核证当前事项';
+  status.setAttribute('role', 'status');
+  const joint = document.createElement('div');
+  joint.hidden = true;
+  for (const [role, label, rows] of [['source', '本账入账', incoming], ['target', '本账出账', outgoing]]) {
+    const fieldset = document.createElement('fieldset'), legend = document.createElement('legend');
+    legend.textContent = label; fieldset.append(legend);
+    for (const row of rows) {
+      const item = document.createElement('label'), input = document.createElement('input');
+      input.type = 'checkbox'; input.name = role; input.value = String(row.id);
+      input.checked = input.disabled = String(row.id) === String(selection.flowId);
+      item.append(input, ` ${row.trade_time || '时刻待核'} · ${row.currency} ${row.amount}`);
+      fieldset.append(item);
+    }
+    joint.append(fieldset);
+  }
+  section.append(title, label, joint, button, status, result);
+  wrap.append(section);
+  const scopeCurrent = () => section.isConnected && contextIsCurrent(selection, context)
+    && contextEdgeIsCurrent(selection) && selection.load === load && selection.detail === detail
+    && selection.data?.review?.token === review.token;
+
+  function upperBoundOriginal(target, packet) {
+    const id = /^F([1-9]\d*)$/.exec(target.ref)?.[1];
+    const locator = packet.records.find(record => record.id === target.ref)?.locator;
+    if (!id || !packet.facts.target_refs?.includes(target.ref)
+      || !selection.data.rows.some(row => String(row.id) === id)
+      || !locator?.file_url || locator.source_row !== target.source_row) return null;
+
+    const open = document.createElement('button');
+    open.type = 'button'; open.className = 'btn small';
+    open.textContent = `查看原行 ${target.source_row}`;
+    open.onclick = async () => {
+      if (!scopeCurrent() || !open.isConnected || selection.phase !== 'ready' || open.disabled) return;
+      selection.modelTrialRequest?.abort();
+      const request = new AbortController();
+      selection.modelTrialRequest = request;
+      const current = () => scopeCurrent() && selection.modelTrialRequest === request && !request.signal.aborted;
+      open.disabled = true;
+      try {
+        const record = await readContextRecord(selection, id, request.signal);
+        if (!current()) return;
+        const original = record.originals?.find(row => row.download_url === locator.file_url
+          && row.member_path === locator.member_path && row.source_row === locator.source_row && row.cells?.length);
+        if (!original) {
+          toast('所引原行当前无法回查。', 'warn', context);
+          return;
+        }
+        const previous = [...result.children], back = document.createElement('button'), content = document.createElement('div');
+        back.type = 'button'; back.className = 'btn small'; back.textContent = '返回核证结果';
+        content.innerHTML = contextOriginalMarkup(original);
+        result.replaceChildren(back, content);
+        back.focus();
+        back.onclick = () => {
+          if (!scopeCurrent() || !back.isConnected) return;
+          result.replaceChildren(...previous);
+          open.focus();
+        };
+      } catch (error) {
+        if (!current()) return;
+        if ([404, 409].includes(error.status)) {
+          closeContext();
+          toast('原件或核对范围已更新，请重新打开核对。', 'warn', context);
+        } else toast('原始记录暂不可用。', 'warn', context);
+      } finally {
+        if (selection.modelTrialRequest === request) selection.modelTrialRequest = null;
+        open.disabled = false;
+      }
+    };
+    return open;
+  }
+
+  void trialEnabled().then(enabled => { if (scopeCurrent()) section.hidden = !enabled; });
+  picker.onchange = () => {
+    selection.modelTrialRequest?.abort();
+    selection.modelTrialRequest = null;
+    status.textContent = ''; result.replaceChildren(); button.disabled = false;
+    joint.hidden = !choices[Number(picker.value)]?.joint;
+  };
+  joint.onchange = picker.onchange;
+  button.onclick = async () => {
+    if (!scopeCurrent() || selection.phase !== 'ready') return;
+    selection.modelTrialRequest?.abort();
+    const controller = new AbortController();
+    selection.modelTrialRequest = controller;
+    const current = () => scopeCurrent() && selection.modelTrialRequest === controller && !controller.signal.aborted;
+    const { kind, group_flow_id, group_flow_ids, joint: useJoint } = choices[Number(picker.value)];
+    const selected = role => [...joint.querySelectorAll(`input[name=${role}]:checked`)].map(input => input.value);
+    const source_flow_ids = useJoint ? selected('source') : [];
+    const target_flow_ids = useJoint ? selected('target') : [];
+    if (useJoint && (!source_flow_ids.length || !target_flow_ids.length || source_flow_ids.length > 50 || target_flow_ids.length > 50)) {
+      status.textContent = '请选择至少一笔入账和一笔出账，每组最多 50 笔。';
+      selection.modelTrialRequest = null;
+      return;
+    }
+    status.textContent = '正在核对当前卡…';
+    result.replaceChildren(); button.disabled = true;
+    const body = { kind, review_token: review.token, canvas_id: String(context.canvasId || 0),
+      ...(selection.edge ? {} : { anchor_id: String(selection.flowId) }), ...(group_flow_id ? { group_flow_id } : {}),
+      ...(group_flow_ids ? { group_flow_ids } : {}),
+      ...(useJoint ? { source_flow_ids, target_flow_ids } : {}),
+      ...(kind !== 'pair' && selection.ledgerBinding ? { ledger_binding: selection.ledgerBinding } : {}) };
+    try {
+      const value = await requestContextTrial(selection, body, controller.signal);
+      if (!current()) return;
+      const facts = value.packet.facts;
+      const receipt = value.receipt;
+      const range = receipt?.status === 'accepted' && receipt.proposition === 'conditional_range';
+      const paired = receipt?.status === 'accepted' && receipt.proposition === 'same_transaction';
+      const timeExclusion = value.reason === 'trace_time_exclusion';
+      const orderUpper = !range && value.reason !== 'source_unavailable' ? facts.selected_order_upper_bound : null;
+      const clockWindow = kind === 'pair' && Number.isInteger(facts.source_card_clock_window_seconds)
+        ? facts.source_card_clock_window_seconds : null;
+      status.textContent = range ? `按可核账面条件，可关联 ${receipt.currency} ${receipt.lower}–${receipt.upper}，实际本金归属待核。` :
+        orderUpper ? `按下列条件，所选入账合计至多承接 ${orderUpper.currency} ${orderUpper.joint_upper}。实际份额待核。` :
+        paired ? `已核证同笔。保留 ${receipt.observations} 条原始观察，统计一笔 ${receipt.currency} ${receipt.amount}。` :
+        clockWindow !== null ? `本案活动来源中，原报时刻差 ${clockWindow} 秒以内且两侧原格互指的候选${facts.candidate_total_exact ? '共' : '至少'} ${facts.candidate_total} 个，已列 ${value.packet.candidates.length} 个。同笔对应和时钟可比性待核。` :
+        facts.account_pair_lead ? '两条原行按本方账号互指，账面余额各自衔接。同笔对应待核。' :
+        value.reason === 'ledger_observations_linked' ? '已核实两条原行对应同一笔账面往来，交易结算待核。' :
+        facts.rule_reason === 'settlement_bridge_missing_correspondence' ? '缺独立清算对应表，留待核。' :
+        facts.rule_reason === 'settlement_bridge_missing_scope_statement' ? '清算对应表缺适用范围及双方时钟说明，留待核。' :
+        facts.rule_reason === 'source_reference_scope_nonunique' ? '原说明表明该范围的参考号可复用，缺独立对应凭据，留待核。' :
+        facts.rule_reason === 'source_reference_scope_unavailable' ? '已登记的参考号适用说明无法核证，留待核。' :
+        facts.rule_reason === 'source_reference_scope_unreviewed' ? '已找到本范围的参考号说明，仍需核清适用条件，留待核。' :
+        facts.rule_reason === 'settlement_bridge_missing_posting_payer' ? '清算声明对应的付款原行缺失，留待核。' :
+        facts.rule_reason === 'settlement_bridge_missing_posting_payee' ? '清算声明对应的收款原行缺失，留待核。' :
+        facts.rule_reason?.startsWith('settlement_bridge_currency_conflict_') ? '清算原行与对应账簿原行的币种不一致，留待核。' :
+        facts.rule_reason?.startsWith('settlement_bridge_amount_conflict_') ? '清算原行与对应账簿原行的金额不一致，留待核。' :
+        value.reason === 'source_clock_scope_unproved' ? '原件没有证明使用同一时基，区间留待核。' :
+        value.reason === 'candidate_scope_incomplete' ? '当前候选范围不完整，留待核。' :
+        timeExclusion ? '原表交易时钟显示，所选出账早于所选入账。若这一时钟反映资金可用顺序，可排除这组入账为这些出账提供资金。' :
+        value.reason === 'ledger_evidence_missing' ? '本方账面余额依据不足，区间保留待核。' :
+        value.reason === 'source_unavailable' ? '原件无法核证，保留待核。' :
+        value.state === 'rule' ? '规则已有依据。' :
+        value.state === 'proposal' ? '已定位建议复查的原行。' : value.state === 'pending' ? '证据不足，保留待核。' :
+          '本机模型暂不可用，可继续手动核对。';
+      if (value.reason === 'source_unavailable') return;
+      if (orderUpper) {
+        const condition = document.createElement('p'), limits = document.createElement('ul');
+        condition.textContent = '假设所选记录有效，原交易时钟反映资金可用顺序。同笔入账分给各目标的金额合计不超过该笔金额。';
+        if (orderUpper.same_direction_ties) {
+          condition.textContent += '所选同刻同向的原行各自保留，先后不影响上界。';
+        }
+        for (const target of orderUpper.targets) {
+          const item = document.createElement('li');
+          const original = upperBoundOriginal(target, value.packet);
+          item.append(original || `原行 ${target.source_row}`,
+            ` 出账单独核算，至多承接 ${orderUpper.currency} ${target.upper}。`);
+          const later = target.later_source_rows;
+          if (later.length) {
+            const listed = later.slice(0, 3).join('、');
+            item.append(`可排除较晚的入账原行 ${listed}${later.length > 3 ? ` 等 ${later.length} 行` : ''}。`);
+          }
+          limits.append(item);
+        }
+        result.append(condition, limits);
+        if (useJoint && (await contextModelTrialStatus())?.configured && current()) {
+          const explain = document.createElement('button'), output = document.createElement('p');
+          explain.type = 'button';
+          explain.className = 'btn small';
+          explain.textContent = '解释这组上界';
+          output.setAttribute('role', 'status');
+          output.setAttribute('aria-label', '条件上界说明');
+          result.append(explain, output);
+          explain.onclick = async () => {
+            if (!scopeCurrent() || !explain.isConnected || selection.phase !== 'ready') return;
+            selection.modelTrialRequest?.abort();
+            const request = new AbortController();
+            selection.modelTrialRequest = request;
+            const owns = () => scopeCurrent() && explain.isConnected && selection.modelTrialRequest === request
+              && !request.signal.aborted;
+            explain.disabled = true;
+            output.textContent = '正在生成说明…';
+            request.signal.addEventListener('abort', () => {
+              explain.disabled = false;
+              output.textContent = '';
+            }, { once: true });
+            const stale = () => {
+              selection.modelTrialRequest = null;
+              result.replaceChildren();
+              status.textContent = '原件或所选流水已更新，请重新核对。';
+            };
+            try {
+              const reply = await requestContextTrial(selection, { ...body, explain: true }, request.signal);
+              if (!owns()) return;
+              if (reply.packet.packet_sha256 !== value.packet.packet_sha256) {
+                stale();
+              } else {
+                output.textContent = reply.explanation_model === 'qwen35-4b' && reply.explanation_calls > 0 && reply.explanation
+                  ? reply.explanation : '说明暂未通过核对。';
+              }
+            } catch (error) {
+              if (!owns()) return;
+              if ([404, 409].includes(error.status)) stale();
+              else output.textContent = '说明暂不可用。';
+            } finally {
+              if (owns()) { selection.modelTrialRequest = null; explain.disabled = false; }
+            }
+          };
+        }
+      }
+      if (!current()) return;
+      const hasCandidateTotal = Number.isInteger(facts.candidate_total);
+      if (kind === 'pair' && !paired && clockWindow === null && (!facts.local_pair_read_only || hasCandidateTotal)) {
+        const note = document.createElement('p');
+        const count = value.packet.candidates.length;
+        note.textContent = hasCandidateTotal
+          ? `已列 ${count} 个候选，共${facts.candidate_total_exact ? '' : '至少'} ${facts.candidate_total} 个。可在来源记录按原行查看。`
+          : `系统在当前范围召回 ${count} 个候选${facts.more_candidates ? '（还有原行未列出）' : ''}。指定两条原行的比较可在来源记录中查看。`;
+        result.append(note);
+      }
+      if (kind !== 'pair' && !range) {
+        const checks = facts.checks || {}, reasons = facts.reasons || [], missing = [];
+        if (Number.isInteger(facts.source_count) && Number.isInteger(facts.target_count)
+          && facts.source_count + facts.target_count > 2) {
+          const group = document.createElement('p');
+          group.textContent = `本次核对 ${facts.source_count} 笔入账和 ${facts.target_count} 笔出账。`;
+          result.append(group);
+        }
+        if (checks.own_balance === false) missing.push('本方余额是否为笔后账面余额');
+        if (checks.interval_records === false) missing.push('区间内收支是否完整');
+        if (checks.order === false || reasons.includes('source_clock_scope_unproved')) missing.push('可比时基或原账记账顺序');
+        if (reasons.includes('cancellation_availability_not_established')) missing.push('冲正前金额的可用时点');
+        if (missing.length) {
+          const note = document.createElement('p');
+          note.textContent = `${orderUpper ? '实际份额需核清' : '资金份额待核，需核清'}${missing.join('、')}。`;
+          result.append(note);
+        }
+        if (reasons.includes('unresolved_source_records')) {
+          const note = document.createElement('p');
+          note.textContent = '案内有尚未界定账簿或时段的来源记录。';
+          result.append(note);
+        }
+      }
+      if (paired && facts.proof_clock_basis === 'incomparable') {
+        const note = document.createElement('p');
+        note.textContent = '清算凭据已逐侧核回。双方时钟口径不可直接比较。';
+        result.append(note);
+      }
+      const advisory = value.packet.selection;
+      const refs = range || paired ? receipt.refs
+        : kind !== 'pair' ? [...(facts.source_refs || []), ...(facts.target_refs || []), ...(advisory?.refs || [])]
+        : facts.ledger_correspondence ? [facts.anchor_ref, `F${facts.ledger_correspondence.peer_id}`]
+        : advisory ? [advisory.choice, ...advisory.refs] : value.state === 'rule'
+        ? value.packet.records.filter(item => item.id === facts.anchor_ref || item.id.startsWith('W')
+          || item.structured.official_candidate).map(item => item.id)
+        : [];
+      if (range && receipt.evidence_window_truncated) {
+        const coverage = document.createElement('p');
+        coverage.textContent = `区间核证覆盖 ${receipt.ledger_rows} 条账簿原行，下列为部分回查入口。`;
+        result.append(coverage);
+      }
+      const separate = paired && Array.isArray(facts.open_book_postings) ? facts.open_book_postings : [];
+      if (paired && facts.more_open_book_postings) {
+        const coverage = document.createElement('p');
+        coverage.textContent = '还有其他过账待核。当前仅显示部分位置。';
+        result.append(coverage);
+      }
+      const pendingRefs = new Set(separate.map(item => item.ref));
+      for (const ref of new Set([...refs, ...pendingRefs])) {
+        const entry = value.packet.records.find(item => item.id === ref), original = entry?.locator;
+        if (!original?.file_url || !/^[0-9a-f]{32}$/.test(original.source_id)
+          || !Number.isInteger(original.source_row) || original.source_row < 1) continue;
+        const source = document.createElement('p'), link = document.createElement('a');
+        const bookSide = kind !== 'pair' && (facts.source_refs?.includes(ref) ? '入账' : facts.target_refs?.includes(ref) ? '出账' : '');
+        const clock = bookSide && (entry.raw.trade_time_wall || entry.raw.trade_time);
+        source.textContent = `${original.sheet || original.member_path} · 原行 ${original.source_row} · ${bookSide ? `${bookSide} · ` : ''}${clock ? `${clock} · ` : ''}`;
+        if (pendingRefs.has(ref)) {
+          const { reference, reason } = separate.find(item => item.ref === ref);
+          const { currency, amount, balance } = entry.raw;
+          const missing = reason === 'settlement_bridge_missing_posting_payer' ? '缺付款原行' :
+            reason === 'settlement_bridge_missing_posting_payee' ? '缺收款原行' : '缺对向核证';
+          source.textContent += `另有账面过账 ${currency} ${amount}，账面余额 ${balance}，参考号 ${reference}，${missing} · `;
+        }
+        const registered = `/api/v1/cases/${encodeURIComponent(context.caseId)}/sources/${original.source_id}`;
+        link.href = facts.pair_proof_kind ? registered + '/member-file?' + new URLSearchParams({ member_path: original.member_path }) :
+          registered + '/file';
+        link.download = '';
+        link.textContent = '查看原件';
+        source.append(link); result.append(source);
+      }
+    } catch (error) {
+      if (current()) status.textContent = error.message || '本机辅助暂不可用。';
+    } finally {
+      if (current()) { selection.modelTrialRequest = null; button.disabled = false; }
+    }
+  };
 }
 
 function renderCtxRows(rows, picked) {
@@ -5078,8 +5757,13 @@ function renderCtxRows(rows, picked) {
     const pairBadge = row.pair_badge === 'conflict' ? '同笔冲突' : row.pair_badge === 'pending' || pending.has(id) ? '同笔待核' : '';
     const marker = anchor ? '本笔' :
       ({ same_time: '同时间', before: '之前', after: '之后', unordered: '先后不明' })[relation] || '';
-    const stamp = /^(\d{4}-\d{2}-\d{2})[ T](.*)$/.exec(row.trade_time || '');
-    const datetime = stamp ? `<span>${esc(stamp[1])}</span><span class="context-time-second">${esc(stamp[2])}</span>` : text(row.trade_time);
+    const date = fields.trade_time_source_date;
+    const stamp = !date && /^(\d{4}-\d{2}-\d{2})[ T](.*)$/.exec(row.trade_time || '');
+    const datetime = stamp ? `<span>${esc(stamp[1])}</span><span class="context-time-second">${esc(stamp[2])}</span>` : text(date || row.trade_time);
+    const uncertainTime = fields.trade_time_precision === 'date_or_midnight' ? '<span class="context-ownership">时刻未证</span>' : '';
+    const direction = { in: '入账', out: '出账' }[fields.book_direction];
+    const directionBasis = direction && fields.book_direction_basis === 'source_own_endpoint'
+      ? `<span class="context-ownership">${fields.book_direction === 'in' ? '据收款方' : '据付款方'}</span>` : '';
     const accountPair = (card, account) => `<span class="context-account-pair"><span>${text(card)}</span>
       <span class="context-overview-only"><span class="sr-only">账号 </span>${text(account)}</span></span>`;
     const counterRole = fields.counter_kind === 'account_or_card' && fields.counter_account ?
@@ -5089,8 +5773,8 @@ function renderCtxRows(rows, picked) {
         aria-label="选择流水 ${esc(row.trade_time || '')} ${esc(fields.name || id)}">`;
     return `<tr class="${anchor ? 'anchor' : ''}" data-flow-id="${esc(id)}">
       <td>${checkbox}</td><td class="mono">${accountPair(fields.card, fields.account)}</td><td class="mono context-account-column">${text(fields.account)}</td><td>${text(fields.name)}</td>
-      <td class="context-time"><time>${datetime}</time>${marker ? `<span class="context-ownership${marker === '先后不明' || anchor ? '' : ' sr-only'}">${marker}</span>` : ''}</td>
-      <td>${text(fields.direction)}</td><td class="amt">${row.amount == null ? '—' : moneyHtml(row.amount, row.currency)}</td>
+      <td class="context-time"><time>${datetime}</time>${uncertainTime}${marker ? `<span class="context-ownership${marker === '先后不明' || anchor ? '' : ' sr-only'}">${marker}</span>` : ''}</td>
+      <td>${text(direction)}${directionBasis}</td><td class="amt">${row.amount == null ? '—' : moneyHtml(row.amount, row.currency)}</td>
       <td class="amt">${row.balance == null ? '—' : moneyHtml(row.balance, row.currency)}</td>
       <td class="mono">${accountPair(fields.counter_card, fields.counter_account)}${counterRole}</td><td class="mono context-account-column">${text(fields.counter_account)}${counterRole}</td>
       <td>${text(fields.counter_name)}</td><td class="context-summary"><span class="context-cell-value">${text(fields.remark)}</span></td><td class="context-summary"><span class="context-cell-value">${text(row.summary)}</span></td>
@@ -5101,25 +5785,28 @@ function renderCtxRows(rows, picked) {
 
 async function openContextRecord(id, button) {
   const selection = state.ctx, context = selection.context, token = selection.data.review.token;
+  selection.modelTrialRequest?.abort();
+  stopContextExplanations(selection);
   const detail = { button, id };
   selection.detail = detail;
   $('#ctxBody').hidden = true; $('#ctxDetail').hidden = false;
   $('#ctxDetailContent').textContent = '正在回查原始记录…';
   $('#ctxDetailBack').focus();
   syncContextSelection();
-  const current = () => contextIsCurrent(selection, context) && selection.detail === detail;
+  const current = () => contextIsCurrent(selection, context) && contextEdgeIsCurrent(selection) && selection.detail === detail;
   try {
-    const path = `/api/context/${encodeURIComponent(selection.flowId ?? 0)}/record/${encodeURIComponent(id)}?${contextQuery(context)}`;
-    const record = await api(path, { headers: { 'X-FundsTrace-Review': token } });
+    const record = await readContextRecord(selection, id);
     if (!current()) return;
-    const raw = (record.originals || []).map(original => `<article>
-      <p>${esc(original.filename)} · ${esc(original.sheet || original.member_path)} · 原行 ${esc(original.source_row)}</p>
-      ${original.download_url ? `<a class="btn small" href="${esc(original.download_url)}" download>查看原件</a>` : ''}
-      <dl>${(original.cells || []).map(cell => `<dt>${esc(cell.header)}</dt><dd>${esc(cell.value || '—')}</dd>`).join('')}</dl></article>`).join('');
+    const raw = (record.originals || []).map(contextOriginalMarkup).join('');
     const pair = record.pair || selection.data.review.pair || {};
     const candidateIds = new Set(pair.candidate_ids || []);
+    const ledger = pair.ledger_correspondence;
     const contextRow = selection.data.rows.find(row => String(row.id) === detail.id);
     const comparison = selection.data.rows.filter(row => String(row.id) !== detail.id && candidateIds.has(String(row.id)));
+    if (ledger) {
+      const index = comparison.findIndex(row => String(row.id) === ledger.peer_id);
+      if (index > 0) comparison.unshift(...comparison.splice(index, 1));
+    }
     const pairReason = {
       reference_reused: '同一作用域内还有竞争记录',
       conflicting_event_facts: '参考号一致，但金额、币种、两端或时间不一致',
@@ -5128,19 +5815,83 @@ async function openContextRecord(id, button) {
       no_scoped_event_proof: '缺少可验证的跨账簿凭据',
       voucher_candidate_only: '同凭证号线索。请逐行核对时间口径、金额币种、双方账卡及收付角色，再排除其他配对。',
     };
-    const rowDescription = contextRow ? `<p>${esc(contextRow.trade_time || '时间待核')} ·
+    const fields = contextRow?.review_fields;
+    const clock = fields?.trade_time_source_date || contextRow?.trade_time;
+    const rowDescription = contextRow ? `<p>${esc(clock || '时间待核')} ·
       ${moneyHtml(contextRow.amount, contextRow.currency)} · 该记录余额 ${contextRow.balance == null ? '—' : moneyHtml(contextRow.balance, contextRow.currency)}</p>` : '';
     const candidates = comparison.length ? `<section class="context-compare"><h4>${pair.status === 'confirmed' ? '已核实的另一侧原记录' : '同笔待核'}</h4>
-      ${pair.status === 'confirmed' ? '' : `<p>${esc(pairReason[pair.reason] || '同笔关联需核对来源范围与竞争记录')}</p>`}
+      ${ledger ? `<p>原第 ${ledger.source_rows.map(esc).join('、')} 行对应同一笔账面往来，交易结算待核。</p>
+        <p>两侧余额可核对原第 ${ledger.witness_rows.map(rows => rows.map(esc).join('、')).join(' 行及第 ')} 行。</p>`
+        : pair.status === 'confirmed' ? '' : `<p>${esc(pairReason[pair.reason] || '同笔关联需核对来源范围与竞争记录')}</p>`}
       ${comparison.map(row => `<button type="button" class="btn small ctx-peer-record" data-id="${esc(row.id)}">
-        ${esc(row.review_fields?.name || row.review_fields?.account || '另一条原记录')} · ${esc(row.trade_time || '时间待核')} · ${moneyHtml(row.amount, row.currency)}</button>`).join('')}</section>` : '';
-    $('#ctxDetailContent').innerHTML = rowDescription + raw + (record.message ? `<p role="status">${esc(record.message)}</p>` : '') + candidates;
+        ${ledger?.peer_id === String(row.id) ? '对应原行 · ' : ''}${esc(row.review_fields?.name || row.review_fields?.account || '另一条原记录')} · ${esc(row.trade_time || '时间待核')} · ${moneyHtml(row.amount, row.currency)}</button>`).join('')}</section>` : '';
+    const fieldOriginal = (record.originals || []).find(original => original.citation_scope && original.cells?.length);
+    const fieldReview = fieldOriginal ? `<section class="context-compare" aria-label="对手标识原列核证">
+      <label>对手标识来源 <select id="ctxFieldCandidate"><option value="">选择类型</option><option value="account">账号列</option><option value="card">卡号列</option></select></label>
+      <label>引文位置 <select id="ctxFieldColumn"><option value="">选择原列</option>
+        ${fieldOriginal.cells.map(cell => `<option value="${esc(cell.column)}">第 ${esc(cell.column)} 列 · ${esc(cell.header)}</option>`).join('')}
+      </select></label>
+      <button type="button" class="btn small" id="ctxVerifyField" disabled>核证所引原列</button>
+      <p id="ctxFieldStatus" role="status"></p></section>` : '';
+    $('#ctxDetailContent').innerHTML = rowDescription + fieldReview + raw
+      + (record.message ? `<p role="status">${esc(record.message)}</p>` : '') + candidates;
+    if (fieldOriginal) bindContextFieldReview(selection, detail, token, current, fieldOriginal.citation_scope);
+    renderContextModelTrial($('#ctxDetailContent'), selection, detail);
     $$('#ctxDetailContent .ctx-peer-record').forEach(peer => {
       peer.onclick = () => { if (current()) return openContextRecord(peer.dataset.id, detail.button); };
     });
   } catch (error) {
     if (current()) $('#ctxDetailContent').textContent = error.message || '原始记录暂不可用';
   }
+}
+
+function contextFieldReviewLabel(receipt) {
+  const { source_row, column } = receipt.citation;
+  if (receipt.evidence_status === 'supported') {
+    const kind = receipt.candidate === 'account' ? '账号' : '卡号';
+    return `核证时的修订支持原第 ${source_row} 行第 ${column} 列为对手${kind}来源。业务判断待核。`;
+  }
+  return receipt.evidence_status === 'refuted' ? '核证时的修订拒绝所引原列。业务判断待核。' : '原列证据不足，业务判断待核。';
+}
+
+function bindContextFieldReview(selection, detail, token, current, scope) {
+  const candidateSelect = $('#ctxFieldCandidate'), columnSelect = $('#ctxFieldColumn');
+  const button = $('#ctxVerifyField'), status = $('#ctxFieldStatus');
+  const previous = selection.fieldReceipt;
+  if (previous?.flow_id === detail.id) status.textContent = contextFieldReviewLabel(previous);
+  candidateSelect.onchange = columnSelect.onchange = () => {
+    button.disabled = !candidateSelect.value || !columnSelect.value;
+  };
+  button.onclick = async () => {
+    if (!current() || !button.isConnected || button.disabled) return;
+    const candidate = candidateSelect.value, citation = { ...scope, column: Number(columnSelect.value) };
+    const revision = selection.data.analysis_revision;
+    const { caseId, canvasId } = selection.context;
+    const path = `/api/context/${encodeURIComponent(selection.flowId ?? 0)}/record/${encodeURIComponent(detail.id)}/verify`;
+    candidateSelect.disabled = columnSelect.disabled = button.disabled = true;
+    selection.fieldReceipt = null;
+    status.textContent = '正在核证所引原列…';
+    try {
+      const receipt = await api(path, { method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-FundsTrace-Review': token },
+        body: JSON.stringify({ case_id: caseId, canvas_id: canvasId || 0, analysis_revision: revision, candidate, citation }),
+      });
+      if (!current() || !status.isConnected) return;
+      if (receipt?.analysis_revision !== revision || receipt?.flow_id !== detail.id || receipt?.candidate !== candidate
+          || receipt?.classification !== 'rule_control' || receipt?.business_status !== 'pending'
+          || !['supported', 'refuted', 'insufficient'].includes(receipt?.evidence_status)
+          || !Object.entries(citation).every(([key, value]) => receipt?.citation?.[key] === value)) {
+        throw new Error('原列核证回执与当前选择不一致');
+      }
+      selection.fieldReceipt = receipt;
+      status.textContent = contextFieldReviewLabel(receipt);
+    } catch (error) {
+      if (current() && status.isConnected) status.textContent = error.status === 409
+        ? '核对范围已变化，请重新打开核对。业务判断待核。' : '原列暂无法核证，业务判断待核。';
+    } finally {
+      if (current() && button.isConnected) candidateSelect.disabled = columnSelect.disabled = button.disabled = false;
+    }
+  };
 }
 
 function bindContextUI() {
@@ -5232,9 +5983,10 @@ function bindContextUI() {
   $('#ctxDetailBack').onclick = () => {
     const detail = state.ctx?.detail;
     if (!detail || !editable()) return;
+    state.ctx.modelTrialRequest?.abort();
     state.ctx.detail = null;
     $('#ctxBody').hidden = false; $('#ctxDetail').hidden = true;
-    $('#ctxDetailContent').innerHTML = ''; syncContextSelection();
+    $('#ctxDetailContent').innerHTML = ''; renderSuggestions(visibleContextRows(state.ctx)); syncContextSelection();
     detail.button.focus({ preventScroll: true });
   };
   $('#ctxTraceThis').onclick = () => {
@@ -5417,6 +6169,7 @@ async function deleteBatch(batch, context) {
     const accepted = await confirmFeedback({ title: '删除导入批次', message: `删除批次「${batch.filename}」？\n\n将撤回这次导入的流水和资料。其他导入仍有支持的流水及其图谱引用会保留；失去最后一份有效支持的流水会移除。此操作无法撤销。`, accept: '删除批次', danger: true, scope: context });
     if (!current() || !accepted || window.FundsMainAccountsActions?.blocked(context) || window.FundsAccountActions?.blocked(context)) return;
     showBatchFeedback('正在删除批次…');
+    if (state.ctx?.context?.caseId === context.caseId && !state.ctx.closed) closeContext();
     await batchRequest(`/api/batches/${encodeURIComponent(batch.id)}?case_id=${encodeURIComponent(context.caseId)}`, { method: 'DELETE' });
     if (!current()) return;
     deleted = true;
@@ -6074,6 +6827,7 @@ function bindUI() {
       let msg = `批量追踪完成：${r.anchors} 条起点记录及其${dirLabel}记录共上图 ${r.tracked} 条`;
       if (notMain) msg += `；${notMain} 条起点记录被跳过（${dirLabel === '来源' ? '付款' : '收款'}方不是主账号，无法追踪）`;
       if (zero) msg += `；${zero} 条起点记录在本方账单中无${dirLabel}流水（仅上图了该记录）`;
+      if (r.recorded_destination) msg += '。已找到共同下游原行，可在画布追踪核对查看资金上限。';
       toast(msg);
       state.forceFit = false;
       await loadGraph();

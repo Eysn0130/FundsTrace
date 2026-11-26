@@ -104,7 +104,8 @@
     const value = effectiveWindow();
     if (!hasWindow(value)) return full;
     const key = windowKey(value), found = cache.get(key);
-    if (found) return { ...full, nodes: withCurrentMetadata(found.nodes), edges: found.edges, funds: found.funds || found.summary?.funds, analysis_revision: found.analysis_revision || full.analysis_revision };
+    if (found) return { ...full, nodes: withCurrentMetadata(found.nodes), edges: found.edges, funds: found.funds || found.summary?.funds,
+      ledger_summary: found.ledger_summary, analysis_revision: found.analysis_revision || full.analysis_revision };
     if (!inflight.has(key) && !errors.has(key)) {
       const context = caseContext(), source = full;
       void loadProjection(value).then(() => {
@@ -116,7 +117,7 @@
       }).catch(() => sync());
     }
     // Never draw old/full-period totals under a narrower time label.
-    return { ...full, nodes: [], edges: [], funds: null };
+    return { ...full, nodes: [], edges: [], funds: null, ledger_summary: null };
   }
   function withCurrentMetadata(nodes) {
     const originals = new Map(state.lastGraph.nodes.map(node => [String(node.account), node]));
@@ -132,7 +133,8 @@
     // Business relationship/neighborhood filters change the facts included in
     // this view. Drawing culling, zoom and paging never enter this request.
     if (graph.nodes.length === projected.nodes.length && graph.edges.length === projected.edges.length) {
-      activeScopeKey = ''; return graph;
+      activeScopeKey = '';
+      return projected.ledger_summary && graph !== projected ? { ...graph, ledger_summary: projected.ledger_summary } : graph;
     }
     const accounts = graph.nodes.map(node => String(node.account)).sort();
     const edges = graph.edges.map(edge => ({ source: String(edge.source), target: String(edge.target) }))
@@ -143,7 +145,7 @@
     const found = cache.get(key);
     if (found) {
       const byAccount = new Map(found.nodes.map(node => [String(node.account), node]));
-      return { ...graph, funds: found.funds, analysis_revision: found.analysis_revision,
+      return { ...graph, funds: found.funds, ledger_summary: found.ledger_summary, analysis_revision: found.analysis_revision,
         nodes: withCurrentMetadata(graph.nodes.map(node => ({ ...node, ...byAccount.get(String(node.account)) }))), edges: found.edges };
     }
     if (!inflight.has(key) && !errors.has(key)) {
@@ -160,7 +162,7 @@
       inflight.set(key, promise);
     }
     // As for time windows, never present an earlier scope's cards or totals.
-    return { ...graph, nodes: [], edges: [], funds: null };
+    return { ...graph, nodes: [], edges: [], funds: null, ledger_summary: null };
   }
   async function edit(label, change, context = caseContext(), source = state.lastGraph) {
     if (!ready() || !live(context, source)) throw new Error('画布正在更新，请稍后重试');
